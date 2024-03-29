@@ -1,6 +1,13 @@
 // TODO: find a way for scuba internal code to not panic
 // TODO: find a way for artificial waits to not be necessary for code functionality
 
+// TODO: figure out why all data is unavailable after login. solved? (N)
+// diagnosis ---> internal issue. data is lost if all devices associated with the id are
+// closed. temporary hack: make sure one device associated with the id is open at al times
+// not quite?.....
+
+// TODO: personalized login message (maybe not until above todo is fixed?)
+
 // scuba related imports
 use tank::client::TankClient;
 use tank::data::ScubaData;
@@ -42,18 +49,24 @@ struct AgentList {
     follower_list: HashMap<String, Agent>,
 }
 
-#[derive(Serialize, Deserialize, Display)]
+#[derive(Clone, Serialize, Deserialize, Display)]
 enum JoinTeamRequestStatus {
     Active,
     Denied(String),
     Accepted,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct JoinTeamRequest {
     agent: Agent,
+    coordinator_id: String,
     status: JoinTeamRequestStatus,
 }
+
+// reference: naming standard for objects in scuba key-value store
+// "agent": private rw permission
+// "agent_list": coordinator write permission. follower read permission
+// "join_team_request/{agent_alias}": follower + coordinatior rw permission
 
 // application instance
 struct ProtestApp {
@@ -523,20 +536,112 @@ impl ProtestApp {
 
     // PART 2: TEAM CREATION & JOINING FUNCTIONALITY
 
+    // helper: format agent list into a string of aliases
+    fn agent_list_to_aliases_str(agent_list: &AgentList) -> String {
+        let mut agent_list_str = String::from("");
+        // step 1: add coordinator information to string
+        agent_list_str.push_str(&String::from("Coordinator:\n"));
+        let coordinator = &agent_list.coordinator;
+        agent_list_str.push_str(&String::from(format!(
+            "Alias: {}, Id: {}, Name: {}\n",
+            &coordinator.alias, &coordinator.id, &coordinator.name,
+        )));
+        agent_list_str.push_str(&String::from("\n"));
+        // step 2: add follower information to string
+        agent_list_str.push_str(&String::from("Followers:\n"));
+        for (alias, agent) in &agent_list.follower_list {
+            agent_list_str.push_str(&String::from(format!(
+                "Alias: {}, Id: {}, Name: {}\n",
+                alias, &agent.id, &agent.name
+            )));
+        }
+        agent_list_str.pop();
+        return agent_list_str;
+    }
+
+    // command: retrieve agent aliases list (must be coordinator or have joined a team)
+    async fn get_team_alias_list_cmd(
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        match ProtestApp::get_agent_list(context).await {
+            ErrorReturn::Object(agent_list) => {
+                return Ok(Some(ProtestApp::agent_list_to_aliases_str(&agent_list)))
+            }
+            ErrorReturn::Error(err) => return Ok(Some(err)),
+        }
+    }
+
+    // helper: format agent list into a string
+    fn agent_list_to_str(agent_list: &AgentList) -> String {
+        let mut agent_list_str = String::from("");
+        // step 1: add coordinator information to string
+        agent_list_str.push_str(&String::from("Coordinator:\n"));
+        let coordinator = &agent_list.coordinator;
+        agent_list_str.push_str(&String::from(format!(
+            "Alias: {}, Id: {}, Name: {}\n",
+            &coordinator.alias, &coordinator.id, &coordinator.name,
+        )));
+        agent_list_str.push_str(&String::from("\n"));
+        // step 2: add follower information to string
+        agent_list_str.push_str(&String::from("Followers:\n"));
+        for (alias, agent) in &agent_list.follower_list {
+            agent_list_str.push_str(&String::from(format!(
+                "Alias: {}, Id: {}, Name: {}\n",
+                alias, &agent.id, &agent.name
+            )));
+        }
+        agent_list_str.pop();
+        return agent_list_str;
+    }
+
     // command: retrieve agent list (must be coordinator or have joined a team)
     async fn get_agent_list_cmd(context: &mut Arc<Self>) -> ReplResult<Option<String>> {
         match ProtestApp::get_agent_list(context).await {
             ErrorReturn::Object(agent_list) => {
-                let mut agent_list_str = String::from("");
-
-                return Ok(Some(agent_list_str));
+                return Ok(Some(ProtestApp::agent_list_to_str(&agent_list)))
             }
             ErrorReturn::Error(err) => return Ok(Some(err)),
         }
     }
 
     // not command: retrieve agent list (must be coordinator or have joined a team)
-    async fn get_agent_list(context: &mut Arc<Self>) -> ErrorReturn<AgentList> {}
+    async fn get_agent_list(context: &mut Arc<Self>) -> ErrorReturn<AgentList> {
+        // step 1: start transaction & check that device exists
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        if !context.exists_device().await {
+            context.client.end_transaction().await;
+            return ErrorReturn::Error(String::from(
+                "Client Error: Device Does Not Exist. Please Login First",
+            ));
+        }
+        // step 2: get & return agent list from key value store
+        match context.client.get_data(&String::from("agent_list")).await {
+            Ok(Some(agent_list_obj)) => {
+                context.client.end_transaction().await;
+                let agent_list: AgentList =
+                    serde_json::from_str(agent_list_obj.data_val()).unwrap();
+                return ErrorReturn::Object(agent_list);
+            }
+            Ok(None) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(
+                    "Client Error: Agent List Does Not Exist. Create Team Or Join Team First",
+                ));
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Agent List Could Not Be Retrieved. {}",
+                    err
+                )));
+            }
+        }
+    }
 
     // command: promote agent to coordinator and create agent list
     async fn create_team_cmd(context: &mut Arc<Self>) -> ReplResult<Option<String>> {
@@ -570,7 +675,7 @@ impl ProtestApp {
             },
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::thread::sleep(std::time::Duration::from_secs(2));
         // step 3: create agent list in memory
         let mut agent = match ProtestApp::get_agent_info(context).await {
             ErrorReturn::Object(agent) => agent,
@@ -687,8 +792,13 @@ impl ProtestApp {
             ErrorReturn::Object(agent) => agent,
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         };
+        let coordinator_id = args
+            .get_one::<String>("coordinator_id")
+            .unwrap()
+            .to_string();
         let join_team_request = JoinTeamRequest {
             agent: agent.clone(),
+            coordinator_id: coordinator_id.clone(),
             status: JoinTeamRequestStatus::Active,
         };
         let json_join_team_request = serde_json::to_string(&join_team_request).unwrap();
@@ -745,10 +855,6 @@ impl ProtestApp {
                 "System Error: Unable To Start Transaction",
             ));
         }
-        let coordinator_id = args
-            .get_one::<String>("coordinator_id")
-            .unwrap()
-            .to_string();
         match context.client.add_contact(coordinator_id.clone()).await {
             Ok(_) => context.client.end_transaction().await,
             Err(err) => {
@@ -819,10 +925,21 @@ impl ProtestApp {
             ));
         }
         // step 1.5: check that agent is a Coordinator, not a Follower
-
+        match ProtestApp::get_agent_role(context).await {
+            ErrorReturn::Object(role) => match role {
+                Role::Follower => {
+                    return ErrorReturn::Error(String::from(
+                        "Client Error: Followers Cannot Accept Join Team Requests",
+                    ))
+                }
+                Role::Coordinator => {}
+            },
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
         // note: keep track of reason (or no reason) to reject join team request
-        let status: JoinTeamRequestStatus;
-        // step 2: retrieve agent's join team request (if it exists)
+        let mut status = JoinTeamRequestStatus::Accepted;
+        // step 2: retrieve agent's join team request (if it exists).
         let result = context.client.start_transaction();
         if result.is_err() {
             return ErrorReturn::Error(String::from(
@@ -831,12 +948,39 @@ impl ProtestApp {
         }
         let agent_alias = args.get_one::<String>("agent_alias").unwrap().to_string();
         let data_id = String::from(format!("join_team_request/{}", agent_alias));
-        match context.client.get_data(&data_id).await {
+        let mut join_team_request = match context.client.get_data(&data_id).await {
             Ok(Some(join_team_request_obj)) => {
                 context.client.end_transaction().await;
                 let join_team_request: JoinTeamRequest =
                     serde_json::from_str(join_team_request_obj.data_val()).unwrap();
+                // don't reconsider already rejected
+                match join_team_request.status {
+                    JoinTeamRequestStatus::Denied(_) => return ErrorReturn::Error(String::from(
+                        "Client Error: This Join Team Request Has Already Been Denied",
+                    )),
+                    JoinTeamRequestStatus::Accepted => {}
+                    JoinTeamRequestStatus::Active => {}
+                }
                 // important! note: no two agents in a team can share the same alias
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                match ProtestApp::get_agent_list(context).await {
+                    ErrorReturn::Object(agent_list) => {
+                        if agent_alias == agent_list.coordinator.alias {
+                            status = JoinTeamRequestStatus::Denied(String::from(
+                                "Client Error: Your Alias Is Already In Use. Update Your Alias"
+                            ))
+                        }
+                        for (follower_alias, _agent) in &agent_list.follower_list {
+                            if agent_alias == *follower_alias {
+                                status = JoinTeamRequestStatus::Denied(String::from(
+                                    "Client Error: Your Alias Is Already In Use. Update Your Alias"
+                                ))
+                            }
+                        }
+                    }
+                    ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+                }
+                join_team_request
             }
             Ok(None) => {
                 context.client.end_transaction().await;
@@ -852,9 +996,225 @@ impl ProtestApp {
                     err
                 )));
             }
+        };
+        // step 3: add agent to team (if there is no reason to reject request)
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
         }
+        join_team_request.status = status.clone();
+        let json_join_team_request = serde_json::to_string(&join_team_request).unwrap();
+        match context
+            .client
+            .set_data(
+                String::from(format!("join_team_request/{}", agent_alias)),
+                String::from(format!("join_team_request")),
+                json_join_team_request,
+                None,
+                None,
+                false,
+            )
+            .await
+        {
+            Ok(_) => {
+                context.client.end_transaction().await;
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Join Team Request Could Not Be Created. {}",
+                    err.to_string()
+                )));
+            }
+        }
+        match status {
+            JoinTeamRequestStatus::Accepted => {
+                // step 3.5: add accepted agent to agent list
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let mut agent_list = match ProtestApp::get_agent_list(context).await {
+                    ErrorReturn::Object(agent_list) => agent_list,
+                    ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+                };
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                agent_list
+                    .follower_list
+                    .insert(agent_alias.clone(), join_team_request.agent.clone());
+                let json_agent_list = serde_json::to_string(&agent_list).unwrap();
+                let res = context.client.start_transaction();
+                if res.is_err() {
+                    return ErrorReturn::Error(String::from(
+                        "System Error: Cannot Start Transaction",
+                    ));
+                }
+                match context
+                    .client
+                    .set_data(
+                        String::from("agent_list"),
+                        String::from("agent_list"),
+                        json_agent_list,
+                        None,
+                        None,
+                        false,
+                    )
+                    .await
+                {
+                    Ok(_) => context.client.end_transaction().await,
+                    Err(err) => {
+                        context.client.end_transaction().await;
+                        return ErrorReturn::Error(String::from(format!(
+                            "System Error: Agent List Could Not be Updated. {}",
+                            err.to_string()
+                        )));
+                    }
+                }
+                // step 3.6 share agent list (as a reader) with new agent
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let reader = join_team_request.agent.name.clone();
+                let readers = vec![&reader];
+                match context
+                    .client
+                    .add_do_readers(String::from("agent_list"), readers)
+                    .await
+                {
+                    Ok(_) => {
+                        context.client.end_transaction().await;
+                        return ErrorReturn::Object(String::from(format!(
+                            "{}",
+                            agent_alias
+                        )));
+                    }
+                    Err(err) => {
+                        context.client.end_transaction().await;
+                        return ErrorReturn::Error(String::from(format!(
+                            "System Error: Agent List Could Not Be Shared. {}",
+                            err
+                        )));
+                    }
+                }
+            }
+            JoinTeamRequestStatus::Denied(_) => {
+                return ErrorReturn::Object(String::from(
+                    "Client Error: Provided Agent Alias Is Already In Use In The Team",
+                ))
+            }
+            JoinTeamRequestStatus::Active => {
+                return ErrorReturn::Error(String::from(
+                    "System Error: This Line Of Code Should be Unreachable",
+                ));
+            }
+        }
+    }
 
-        return ErrorReturn::Error(String::from(""));
+    async fn check_join_team_request_cmd(
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        match ProtestApp::check_join_team_request(context).await {
+            ErrorReturn::Object(_) => {
+                return Ok(Some(String::from(
+                    "Success: Join Team Request Has Been Accepted",
+                )))
+            }
+            ErrorReturn::Error(err) => return Ok(Some(err)),
+        }
+    }
+
+    async fn check_join_team_request(context: &mut Arc<Self>) -> ErrorReturn<String> {
+        // step 1: check that device exists
+        if !context.exists_device().await {
+            context.client.end_transaction().await;
+            return ErrorReturn::Error(String::from(
+                "Client Error: Device Does Not Exist. Please Login First",
+            ));
+        }
+        let alias = match ProtestApp::get_agent_alias(context).await {
+            ErrorReturn::Object(alias) => alias,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        // step 2: check status of join team request
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        match context
+            .client
+            .get_data(&String::from(format!("join_team_request/{}", alias)))
+            .await
+        {
+            Ok(Some(join_team_request_obj)) => {
+                context.client.end_transaction().await;
+                // step 2.5: update agent if join team request was accepted
+                let join_team_request: JoinTeamRequest =
+                    serde_json::from_str(join_team_request_obj.data_val()).unwrap();
+                match join_team_request.status {
+                    JoinTeamRequestStatus::Accepted => {
+                        let mut agent = match ProtestApp::get_agent_info(context).await {
+                            ErrorReturn::Object(agent) => agent,
+                            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+                        };
+                        agent.coordinator_id = Some(join_team_request.coordinator_id);
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        let result = context.client.start_transaction();
+                        if result.is_err() {
+                            return ErrorReturn::Error(String::from(
+                                "System Error: Unable To Start Transaction",
+                            ));
+                        }
+                        let json_agent = serde_json::to_string(&agent).unwrap();
+                        match context
+                            .client
+                            .set_data(
+                                String::from("agent"),
+                                String::from("agent"),
+                                json_agent,
+                                None,
+                                None,
+                                false,
+                            )
+                            .await
+                        {
+                            Ok(_) => {
+                                context.client.end_transaction().await;
+                                return ErrorReturn::Object(String::from(""));
+                            }
+                            Err(err) => {
+                                context.client.end_transaction().await;
+                                return ErrorReturn::Error(String::from(format!(
+                                    "System Error: Agent Could Not Be updated. {}",
+                                    err.to_string()
+                                )));
+                            }
+                        }
+                    }
+                    JoinTeamRequestStatus::Active => {
+                        return ErrorReturn::Error(String::from(
+                            "Pending: Join Team Request Has Not Been Accepted Yet",
+                        ));
+                    }
+                    JoinTeamRequestStatus::Denied(err) => {
+                        return ErrorReturn::Error(err);
+                    }
+                }
+            }
+            Ok(None) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(
+                    "System Error: Join Team Request Does Not Exist",
+                ));
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Join Team Request Could Not Be Retrieved. {}",
+                    err
+                )));
+            }
+        }
     }
 
     // PART 3: PRIVATE MESSAGING FUNCTIONALITY
@@ -958,6 +1318,10 @@ async fn main() -> ReplResult<()> {
             |args, context| {
                 Box::pin(ProtestApp::join_team_accept_request_cmd(args, context))
             },
+        )
+        .with_command_async(
+            Command::new("check_join_team_request").about("check_join_team_request"),
+            |_, context| Box::pin(ProtestApp::check_join_team_request_cmd(context)),
         );
     repl.run_async().await
 }
