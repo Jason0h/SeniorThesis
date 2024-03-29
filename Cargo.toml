@@ -11,6 +11,7 @@ members = [
     "apps/cmdline/lightswitch",
     "apps/cmdline/password-manager",
     "apps/cmdline/period-tracking",
+    "apps/cmdline/senior-thesis",
     "server",
     "server-bench",
     "server-goose-bench",
