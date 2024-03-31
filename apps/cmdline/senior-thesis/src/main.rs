@@ -8,20 +8,55 @@
 
 // TODO: personalized login message (maybe not until above todo is fixed?)
 
+// TODO: add team name functionality to application (for fun)
+
 // scuba related imports
 use tank::client::TankClient;
 use tank::data::ScubaData;
 // command line imports
-use reedline_repl_rs::clap::{Arg, ArgMatches, Command};
+use reedline_repl_rs::clap::{Arg, ArgMatches, Command, Error};
 use reedline_repl_rs::Repl;
 use reedline_repl_rs::Result as ReplResult;
+use std::intrinsics::mir::Offset;
 // asynchronous functionality imports
 use std::sync::Arc;
 // json data conversion imports
 use serde::{Deserialize, Serialize};
+// time functionality import
+use time::OffsetDateTime;
 // miscellanious imports
 use std::collections::HashMap;
 use strum_macros::Display;
+
+// REFERENCE: naming standard for objects in scuba key-value store
+
+// "agent"
+// agent: write
+
+// "agent_list"
+// coordinator: write. followers: read
+
+// "join_team_request/{agent_alias}"
+// follower: write. coordinator: write
+
+// "private_messages/{coordinator_alias}/{agent_alias_from}/{agent_alias_to}"
+// agent_from: write. agent_to: read
+
+// "private_messages_info"
+// agent: write
+
+// REFERENCE: how to use debug commands for quick team creation
+
+// creating coordinator (trent) + followers: alice, bob
+// window 0: ccc       ab
+// window 1:     ca       ch
+// window 2:        cb       ch
+
+// creating coordinator (trent) + followers: alice, bob, carol
+// window 0: ccc          abc
+// window 1:     ca           ch
+// window 2:        cb           ch
+// window 3:           cc           ch
 
 enum ErrorReturn<T> {
     Error(String),
@@ -40,13 +75,13 @@ struct Agent {
     name: String,
     alias: String,
     role: Role,
-    coordinator_id: Option<String>,
+    coordinator_alias: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct AgentList {
     coordinator: Agent,
-    follower_list: HashMap<String, Agent>,
+    follower_list: HashMap<String, Agent>, // <agent_alias, agent>
 }
 
 #[derive(Clone, Serialize, Deserialize, Display)]
@@ -59,14 +94,26 @@ enum JoinTeamRequestStatus {
 #[derive(Clone, Serialize, Deserialize)]
 struct JoinTeamRequest {
     agent: Agent,
-    coordinator_id: String,
+    coordinator_alias: String,
     status: JoinTeamRequestStatus,
 }
 
-// reference: naming standard for objects in scuba key-value store
-// "agent": private rw permission
-// "agent_list": coordinator write permission. follower read permission
-// "join_team_request/{agent_alias}": follower + coordinatior rw permission
+#[derive(Serialize, Deserialize)]
+struct PrivateMessagesInfo {
+    last_observed_time_stamp_from: HashMap<String, Option<OffsetDateTime>>, /* <agent_alias, time_stamp> */
+}
+
+struct MessageChain {
+    agent_from_alias: String,
+    agent_to_alias: String,
+    message_chain: Vec<Message>,
+    last_message_time_stamp: OffsetDateTime,
+}
+
+struct Message {
+    message: String,
+    time_stamp: OffsetDateTime,
+}
 
 // application instance
 struct ProtestApp {
@@ -85,7 +132,89 @@ impl ProtestApp {
         Self { client }
     }
 
-    // PART 1: MISCELLANIOUS BASIC FUNCTIONALITY
+    // PART 0: SHORTCUT COMMANDS (FOR DEBUGGING PURPOSES)
+
+    // for debugging purposes: create a coordinator (i.e. team). return id name
+    async fn create_coordinator_cmd(
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        let _ = ProtestApp::signup_agent(String::from("Trent"), context).await;
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        ProtestApp::create_team(context).await;
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        let agent = match ProtestApp::get_agent_info(context).await {
+            ErrorReturn::Object(agent) => agent,
+            ErrorReturn::Error(_) => Agent {
+                id: String::from(""),
+                name: String::from(""),
+                alias: String::from(""),
+                role: Role::Follower,
+                coordinator_alias: None,
+            },
+        };
+        return Ok(Some(String::from(format!("{} {}", agent.id, agent.name))));
+    }
+
+    // for debugging purposes: accept alice and bob's requests
+    async fn accept_alice_bob_cmd(context: &mut Arc<Self>) -> ReplResult<Option<String>> {
+        ProtestApp::join_team_accept_request(String::from("Alice"), context).await;
+        ProtestApp::join_team_accept_request(String::from("Bob"), context).await;
+        return Ok(Some(String::from("ab done")));
+    }
+
+    // for debugging purposes: accept alice, bob, and carol's requests
+    async fn accept_alice_bob_charles_cmd(
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        ProtestApp::join_team_accept_request(String::from("Alice"), context).await;
+        ProtestApp::join_team_accept_request(String::from("Bob"), context).await;
+        ProtestApp::join_team_accept_request(String::from("Carol"), context).await;
+        return Ok(Some(String::from("abc done")));
+    }
+
+    // for debugging purposes: create a follower and send join team request
+    async fn create_agent_send_request(
+        alias: String,
+        args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        let _ = ProtestApp::signup_agent(alias, context).await;
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let _ = ProtestApp::join_team_request_cmd(args, context).await;
+        return Ok(Some(String::from("foobar")));
+    }
+
+    // for debugging purposes: create a follower and send join team request
+    async fn create_alice_cmd(
+        args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        let _ =
+            ProtestApp::create_agent_send_request(String::from("Alice"), args, context)
+                .await;
+        return Ok(Some(String::from("ca done")));
+    }
+
+    // for debugging purposes: create a follower and send join team request
+    async fn create_bob_cmd(
+        args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        let _ = ProtestApp::create_agent_send_request(String::from("Bob"), args, context)
+            .await;
+        return Ok(Some(String::from("cb done")));
+    }
+
+    // for debugging purposes: create a follower and send join team request
+    async fn create_carol_cmd(
+        args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        let _ =
+            ProtestApp::create_agent_send_request(String::from("Carol"), args, context)
+                .await;
+        return Ok(Some(String::from("cc done")));
+    }
 
     // command: for debug purposes: dump all data associated with agent
     async fn dump_data_cmd(context: &mut Arc<Self>) -> ReplResult<Option<String>> {
@@ -126,9 +255,23 @@ impl ProtestApp {
         }
     }
 
+    // PART 1: MISCELLANIOUS BASIC FUNCTIONALITY
+
     // command: create client device and save personal information
     async fn signup_agent_cmd(
         args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        ProtestApp::signup_agent(
+            args.get_one::<String>("alias").unwrap().to_string(),
+            context,
+        )
+        .await
+    }
+
+    // not command: create client device and save personal information
+    async fn signup_agent(
+        alias: String,
         context: &mut Arc<Self>,
     ) -> ReplResult<Option<String>> {
         // step 1: start transaction
@@ -156,13 +299,42 @@ impl ProtestApp {
                 ))));
             }
         }
+        // step a: setup private messages info data in memory
+        let private_messages_info = PrivateMessagesInfo {
+            last_observed_time_stamp_from: HashMap::new(),
+        };
+        let json_private_messages_info =
+            serde_json::to_string(&private_messages_info).unwrap();
+
+        // step b: commit private messages info data to key value store
+        match context
+            .client
+            .set_data(
+                String::from("private_messages_info"),
+                String::from("private_messages_info"),
+                json_private_messages_info,
+                None,
+                None,
+                false,
+            )
+            .await
+        {
+            Ok(_) => {}
+            Err(err) => {
+                context.client.end_transaction().await;
+                return Ok(Some(String::from(format!(
+                    "System Error: Agent Could Not Be Created. {}",
+                    err.to_string()
+                ))));
+            }
+        }
         // step 3: setup client data in memory
         let agent = Agent {
             id: context.client.idkey(),
             name: context.client.linked_name(),
-            alias: args.get_one::<String>("alias").unwrap().to_string(),
+            alias: alias.clone(),
             role: Role::Follower,
-            coordinator_id: None,
+            coordinator_alias: None,
         };
         let json_agent = serde_json::to_string(&agent).unwrap();
         // step 4: commit client data to key value store
@@ -182,7 +354,7 @@ impl ProtestApp {
                 context.client.end_transaction().await;
                 return Ok(Some(String::from(format!(
                     "Success: Welcome {}! Please Save Your Id For Future Login: {}",
-                    args.get_one::<String>("alias").unwrap().to_string(),
+                    alias.clone(),
                     context.client.idkey()
                 ))));
             }
@@ -201,6 +373,18 @@ impl ProtestApp {
         args: ArgMatches,
         context: &mut Arc<Self>,
     ) -> ReplResult<Option<String>> {
+        ProtestApp::login_agent(
+            args.get_one::<String>("id").unwrap().to_string(),
+            context,
+        )
+        .await
+    }
+
+    // not command: use id as authentication to link client
+    async fn login_agent(
+        id: String,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
         // step 1: start transaction
         let result = context.client.start_transaction();
         if result.is_err() {
@@ -216,11 +400,7 @@ impl ProtestApp {
             )));
         }
         // step 2: link client device
-        match context
-            .client
-            .create_linked_device(args.get_one::<String>("id").unwrap().to_string())
-            .await
-        {
+        match context.client.create_linked_device(id).await {
             Ok(_) => {
                 context.client.end_transaction().await;
                 return Ok(Some(String::from("Success: Welcome Back!")));
@@ -247,13 +427,13 @@ impl ProtestApp {
     async fn get_agent_info_cmd(context: &mut Arc<Self>) -> ReplResult<Option<String>> {
         match ProtestApp::get_agent_info(context).await {
             ErrorReturn::Object(agent) => {
-                let coordinator_id = match agent.coordinator_id {
-                    Some(coordinator_id) => coordinator_id,
+                let coordinator_alias = match agent.coordinator_alias {
+                    Some(coordinator_alias) => coordinator_alias,
                     None => String::from("N/A"),
                 };
                 return Ok(Some(String::from(format!(
-                    "Success: Id: {}, Alias: {}, Name: {}, Role: {}, Coordinator-Id: {}",
-                    agent.id, agent.alias, agent.name, agent.role, coordinator_id
+                    "Success: Id: {}, Alias: {}, Name: {}, Role: {}, Coordinator Alias: {}",
+                    agent.id, agent.alias, agent.name, agent.role, coordinator_alias
                 ))));
             }
             ErrorReturn::Error(err) => return Ok(Some(err)),
@@ -356,7 +536,7 @@ impl ProtestApp {
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         };
         // step 1.1: check that client has not joined a team
-        match agent.coordinator_id {
+        match agent.coordinator_alias {
             Some(_) => {}
             None => {
                 return ErrorReturn::Error(String::from(
@@ -463,38 +643,38 @@ impl ProtestApp {
         }
     }
 
-    // command: return client's coordinator's id
-    async fn get_agent_coordinator_id_cmd(
+    // command: return client's coordinator's alias
+    async fn get_agent_coordinator_alias_cmd(
         context: &mut Arc<Self>,
     ) -> ReplResult<Option<String>> {
-        match ProtestApp::get_agent_coordinator_id(context).await {
-            ErrorReturn::Object(coordinator_id) => {
+        match ProtestApp::get_agent_coordinator_alias(context).await {
+            ErrorReturn::Object(coordinator_alias) => {
                 return Ok(Some(String::from(format!(
-                    "Success: Coordinator's Id Is: {}",
-                    coordinator_id
+                    "Success: Coordinator's Alias Is: {}",
+                    coordinator_alias
                 ))))
             }
             ErrorReturn::Error(err) => return Ok(Some(err)),
         }
     }
 
-    // not command: return client's coordinator's id
-    async fn get_agent_coordinator_id(context: &mut Arc<Self>) -> ErrorReturn<String> {
+    // not command: return client's coordinator's alias
+    async fn get_agent_coordinator_alias(context: &mut Arc<Self>) -> ErrorReturn<String> {
         // step 1: check that device exists
         if !context.exists_device().await {
             return ErrorReturn::Error(String::from(
                 "Client Error: Device Does Not Exist. Please Login First",
             ));
         }
-        // step 2: get and return client's coordinator's id
+        // step 2: get and return client's coordinator's alias
         match ProtestApp::get_agent_info(context).await {
             ErrorReturn::Object(agent) => match agent.role {
                 Role::Follower => {
-                    let coordinator_id = match agent.coordinator_id {
-                        Some(coordinator_id) => coordinator_id,
+                    let coordinator_alias = match agent.coordinator_alias {
+                        Some(coordinator_alias) => coordinator_alias,
                         None => String::from("N/A"),
                     };
-                    ErrorReturn::Object(coordinator_id)
+                    ErrorReturn::Object(coordinator_alias)
                 }
                 Role::Coordinator => {
                     return ErrorReturn::Error(String::from(
@@ -542,25 +722,19 @@ impl ProtestApp {
         // step 1: add coordinator information to string
         agent_list_str.push_str(&String::from("Coordinator:\n"));
         let coordinator = &agent_list.coordinator;
-        agent_list_str.push_str(&String::from(format!(
-            "Alias: {}, Id: {}, Name: {}\n",
-            &coordinator.alias, &coordinator.id, &coordinator.name,
-        )));
+        agent_list_str.push_str(&String::from(format!("{}", &coordinator.alias)));
         agent_list_str.push_str(&String::from("\n"));
         // step 2: add follower information to string
-        agent_list_str.push_str(&String::from("Followers:\n"));
-        for (alias, agent) in &agent_list.follower_list {
-            agent_list_str.push_str(&String::from(format!(
-                "Alias: {}, Id: {}, Name: {}\n",
-                alias, &agent.id, &agent.name
-            )));
+        agent_list_str.push_str(&String::from("\nFollowers:\n"));
+        for (alias, _agent) in &agent_list.follower_list {
+            agent_list_str.push_str(&String::from(format!("{}\n", alias)));
         }
         agent_list_str.pop();
         return agent_list_str;
     }
 
     // command: retrieve agent aliases list (must be coordinator or have joined a team)
-    async fn get_team_alias_list_cmd(
+    async fn get_agent_alias_list_cmd(
         context: &mut Arc<Self>,
     ) -> ReplResult<Option<String>> {
         match ProtestApp::get_agent_list(context).await {
@@ -643,12 +817,14 @@ impl ProtestApp {
         }
     }
 
+    // TODO: return the actual Id Name in place of the placeholder success message
+
     // command: promote agent to coordinator and create agent list
     async fn create_team_cmd(context: &mut Arc<Self>) -> ReplResult<Option<String>> {
         match ProtestApp::create_team(context).await {
             ErrorReturn::Object(_) => {
                 return Ok(Some(String::from(
-                    "Success: Team Has Been Created. Agents May Send Join Team Requests To Your Id",
+                    "Success: Team Has Been Created. Agents May Send Join Team Requests To Your Id Name",
                 )))
             }
             ErrorReturn::Error(err) => return Ok(Some(err)),
@@ -798,12 +974,12 @@ impl ProtestApp {
             .to_string();
         let join_team_request = JoinTeamRequest {
             agent: agent.clone(),
-            coordinator_id: coordinator_id.clone(),
+            coordinator_alias: String::from("N/A"),
             status: JoinTeamRequestStatus::Active,
         };
         let json_join_team_request = serde_json::to_string(&join_team_request).unwrap();
         // step 2.1: check that agent has not joined a team
-        match agent.coordinator_id {
+        match agent.coordinator_alias {
             Some(_) => {
                 return ErrorReturn::Error(String::from(
                     "Client Error: Agent Already Joined A Team, Cannot Make A Join Team Request",
@@ -902,7 +1078,12 @@ impl ProtestApp {
         args: ArgMatches,
         context: &mut Arc<Self>,
     ) -> ReplResult<Option<String>> {
-        match ProtestApp::join_team_accept_request(args, context).await {
+        match ProtestApp::join_team_accept_request(
+            args.get_one::<String>("agent_alias").unwrap().to_string(),
+            context,
+        )
+        .await
+        {
             ErrorReturn::Object(agent_alias) => {
                 return Ok(Some(String::from(format!(
                     "Success: Join Team Request Of {} Has Been Accepted",
@@ -915,7 +1096,7 @@ impl ProtestApp {
 
     // not command: accept a Follower's join team request
     async fn join_team_accept_request(
-        args: ArgMatches,
+        agent_alias: String,
         context: &mut Arc<Self>,
     ) -> ErrorReturn<String> {
         // step 1: check that device exists
@@ -925,14 +1106,17 @@ impl ProtestApp {
             ));
         }
         // step 1.5: check that agent is a Coordinator, not a Follower
-        match ProtestApp::get_agent_role(context).await {
-            ErrorReturn::Object(role) => match role {
+        let coordinator_alias: String;
+        match ProtestApp::get_agent_info(context).await {
+            ErrorReturn::Object(agent) => match agent.role {
                 Role::Follower => {
                     return ErrorReturn::Error(String::from(
                         "Client Error: Followers Cannot Accept Join Team Requests",
                     ))
                 }
-                Role::Coordinator => {}
+                Role::Coordinator => {
+                    coordinator_alias = agent.alias;
+                }
             },
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         }
@@ -946,7 +1130,6 @@ impl ProtestApp {
                 "System Error: Unable To Start Transaction",
             ));
         }
-        let agent_alias = args.get_one::<String>("agent_alias").unwrap().to_string();
         let data_id = String::from(format!("join_team_request/{}", agent_alias));
         let mut join_team_request = match context.client.get_data(&data_id).await {
             Ok(Some(join_team_request_obj)) => {
@@ -1006,6 +1189,7 @@ impl ProtestApp {
             ));
         }
         join_team_request.status = status.clone();
+        join_team_request.coordinator_alias = coordinator_alias;
         let json_join_team_request = serde_json::to_string(&join_team_request).unwrap();
         match context
             .client
@@ -1157,7 +1341,8 @@ impl ProtestApp {
                             ErrorReturn::Object(agent) => agent,
                             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
                         };
-                        agent.coordinator_id = Some(join_team_request.coordinator_id);
+                        agent.coordinator_alias =
+                            Some(join_team_request.coordinator_alias);
                         std::thread::sleep(std::time::Duration::from_secs(2));
                         let result = context.client.start_transaction();
                         if result.is_err() {
@@ -1219,7 +1404,33 @@ impl ProtestApp {
 
     // PART 3: PRIVATE MESSAGING FUNCTIONALITY
 
-    // command
+    // helper: get the current time (isolated for hot swappable purposes)
+    async fn get_time() -> OffsetDateTime {
+        return OffsetDateTime::now_utc();
+    }
+
+    // command: send private message to a team member. message is associated with team
+    async fn send_private_message_cmd(
+        args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        match 
+    }
+
+    // not command: send private message to a team member. message associated with team
+    async fn send_private_message(
+        agent_to_alias: String,
+        message: String,
+        context: &mut Arc<Self>,
+    ) -> ErrorReturn<String> {
+        return ErrorReturn::Error(String::from(""));
+    }
+
+    // command: check
+
+    // not command:
+
+    // command:
 
     // not command
 
@@ -1250,6 +1461,46 @@ async fn main() -> ReplResult<()> {
         .with_name("Protest App")
         .with_version("v0.1.0")
         .with_description("Protest App")
+        .with_command_async(Command::new("ccc").about("ccc"), |_, context| {
+            Box::pin(ProtestApp::create_coordinator_cmd(context))
+        })
+        .with_command_async(Command::new("ab").about("ab"), |_, context| {
+            Box::pin(ProtestApp::accept_alice_bob_cmd(context))
+        })
+        .with_command_async(Command::new("abc").about("abc"), |_, context| {
+            Box::pin(ProtestApp::accept_alice_bob_charles_cmd(context))
+        })
+        .with_command_async(
+            Command::new("ca")
+                .arg(Arg::new("coordinator_id").required(true))
+                .arg(Arg::new("coordinator_name").required(true))
+                .about("ca <coordinator_id> <coordinator_name>"),
+            |args, context| Box::pin(ProtestApp::create_alice_cmd(args, context)),
+        )
+        .with_command_async(
+            Command::new("cb")
+                .arg(Arg::new("coordinator_id").required(true))
+                .arg(Arg::new("coordinator_name").required(true))
+                .about("cb <coordinator_id> <coordinator_name>"),
+            |args, context| Box::pin(ProtestApp::create_bob_cmd(args, context)),
+        )
+        .with_command_async(
+            Command::new("cc")
+                .arg(Arg::new("coordinator_id").required(true))
+                .arg(Arg::new("coordinator_name").required(true))
+                .about("cc <coordinator_id> <coordinator_name>"),
+            |args, context| Box::pin(ProtestApp::create_carol_cmd(args, context)),
+        )
+        .with_command_async(
+            Command::new("ch").about("check_join_team_request"),
+            |_, context| Box::pin(ProtestApp::check_join_team_request_cmd(context)),
+        )
+        .with_command_async(
+            Command::new("signup_agent")
+                .arg(Arg::new("alias").required(true))
+                .about("signup_agent <alias>"),
+            |args, context| Box::pin(ProtestApp::signup_agent_cmd(args, context)),
+        )
         .with_command_async(
             Command::new("dump_data").about("dump_data"),
             |_, context| Box::pin(ProtestApp::dump_data_cmd(context)),
@@ -1290,11 +1541,15 @@ async fn main() -> ReplResult<()> {
         )
         .with_command_async(
             Command::new("get_agent_coordinator_id").about("get_agent_coordinator_id"),
-            |_, context| Box::pin(ProtestApp::get_agent_coordinator_id_cmd(context)),
+            |_, context| Box::pin(ProtestApp::get_agent_coordinator_alias_cmd(context)),
         )
         .with_command_async(
             Command::new("get_agent_role").about("get_agent_role"),
             |_, context| Box::pin(ProtestApp::get_agent_role_cmd(context)),
+        )
+        .with_command_async(
+            Command::new("get_agent_alias_list").about("get_agent_alias_list"),
+            |_, context| Box::pin(ProtestApp::get_agent_alias_list_cmd(context)),
         )
         .with_command_async(
             Command::new("get_agent_list").about("get_agent_list"),
