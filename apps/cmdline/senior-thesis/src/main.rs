@@ -3,21 +3,20 @@
 
 // TODO: figure out why all data is unavailable after login. solved? (N)
 // diagnosis ---> internal issue. data is lost if all devices associated with the id are
-// closed. temporary hack: make sure one device associated with the id is open at al times
-// not quite?.....
+// closed. temporary hack: make sure that original device associated with the id is open
 
-// TODO: personalized login message (maybe not until above todo is fixed?)
+// TODO: include a private message check, that you're not sending a message to yourself
 
-// TODO: add team name functionality to application (for fun)
+// TODO: add team name functionality to application (for fun if time is remaining)
+// TODO: welcome message when member joins (if time is remaining)
 
 // scuba related imports
 use tank::client::TankClient;
 use tank::data::ScubaData;
 // command line imports
-use reedline_repl_rs::clap::{Arg, ArgMatches, Command, Error};
+use reedline_repl_rs::clap::{Arg, ArgMatches, Command};
 use reedline_repl_rs::Repl;
 use reedline_repl_rs::Result as ReplResult;
-use std::intrinsics::mir::Offset;
 // asynchronous functionality imports
 use std::sync::Arc;
 // json data conversion imports
@@ -43,20 +42,29 @@ use strum_macros::Display;
 // agent_from: write. agent_to: read
 
 // "private_messages_info"
+// agent_from: write. followers + coordinator: read
+// agent: write
+
+// "public_messages/{coordinator_alias}/{agent_alias_from}"
+// agent_from: write. followers + coordinator: read
+
+// "public_messages_info"
 // agent: write
 
 // REFERENCE: how to use debug commands for quick team creation
 
+// note! ccc returns an id name, which you must feed into ca, cb, cc
+
 // creating coordinator (trent) + followers: alice, bob
-// window 0: ccc       ab
-// window 1:     ca       ch
-// window 2:        cb       ch
+// window 0: ccc     ab
+// window 1:     ca     ch
+// window 2:     cb     ch
 
 // creating coordinator (trent) + followers: alice, bob, carol
-// window 0: ccc          abc
-// window 1:     ca           ch
-// window 2:        cb           ch
-// window 3:           cc           ch
+// window 0: ccc     abc
+// window 1:     ca      ch
+// window 2:     cb      ch
+// window 3:     cc      ch
 
 enum ErrorReturn<T> {
     Error(String),
@@ -98,21 +106,88 @@ struct JoinTeamRequest {
     status: JoinTeamRequestStatus,
 }
 
-#[derive(Serialize, Deserialize)]
-struct PrivateMessagesInfo {
-    last_observed_time_stamp_from: HashMap<String, Option<OffsetDateTime>>, /* <agent_alias, time_stamp> */
+trait MessageChain {
+    fn message_chain(&self) -> Vec<Message>;
+    fn agent_from_alias(&self) -> String;
 }
 
-struct MessageChain {
+impl MessageChain for PrivateMessageChain {
+    fn message_chain(&self) -> Vec<Message> {
+        return self.message_chain.clone();
+    }
+    fn agent_from_alias(&self) -> String {
+        return self.agent_from_alias.clone();
+    }
+}
+
+impl MessageChain for PublicMessageChain {
+    fn message_chain(&self) -> Vec<Message> {
+        return self.message_chain.clone();
+    }
+    fn agent_from_alias(&self) -> String {
+        return self.agent_from_alias.clone();
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct PrivateMessagesInfo {
+    last_observed_time_stamp_from: HashMap<String, Option<OffsetDateTime>>,
+    // <agent_alias, time_stamp>
+}
+
+#[derive(Serialize, Deserialize)]
+struct PrivateMessageChain {
     agent_from_alias: String,
     agent_to_alias: String,
     message_chain: Vec<Message>,
     last_message_time_stamp: OffsetDateTime,
 }
 
+#[derive(Serialize, Deserialize)]
+struct PublicMessagesInfo {
+    last_observed_time_stamp_from: HashMap<String, Option<OffsetDateTime>>,
+    // <agent_alias, time_stamp>
+}
+
+#[derive(Serialize, Deserialize)]
+struct PublicMessageChain {
+    agent_from_alias: String,
+    message_chain: Vec<Message>,
+    last_message_time_stamp: OffsetDateTime,
+}
+
+impl Ord for Message {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.time_stamp.cmp(&other.time_stamp)
+    }
+}
+
+impl PartialOrd for Message {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Message {
+    fn eq(&self, other: &Self) -> bool {
+        self.time_stamp == other.time_stamp && self.time_stamp == other.time_stamp
+    }
+}
+
+impl Eq for Message {}
+
+#[derive(Serialize, Deserialize, Clone)]
 struct Message {
     message: String,
     time_stamp: OffsetDateTime,
+    message_type: MessageType,
+}
+
+#[derive(Serialize, Deserialize, Clone, Display)]
+enum MessageType {
+    Message,
+    Alert,
+    Announcement,
 }
 
 // application instance
@@ -328,6 +403,34 @@ impl ProtestApp {
                 ))));
             }
         }
+        // step a: setup public messages info data in memory
+        let public_messages_info = PublicMessagesInfo {
+            last_observed_time_stamp_from: HashMap::new(),
+        };
+        let json_public_messages_info =
+            serde_json::to_string(&public_messages_info).unwrap();
+        // step b: commit public messages info data to key value store
+        match context
+            .client
+            .set_data(
+                String::from("public_messages_info"),
+                String::from("public_messages_info"),
+                json_public_messages_info,
+                None,
+                None,
+                false,
+            )
+            .await
+        {
+            Ok(_) => {}
+            Err(err) => {
+                context.client.end_transaction().await;
+                return Ok(Some(String::from(format!(
+                    "System Error: Agent Could Not Be Created. {}",
+                    err.to_string()
+                ))));
+            }
+        }
         // step 3: setup client data in memory
         let agent = Agent {
             id: context.client.idkey(),
@@ -403,7 +506,20 @@ impl ProtestApp {
         match context.client.create_linked_device(id).await {
             Ok(_) => {
                 context.client.end_transaction().await;
-                return Ok(Some(String::from("Success: Welcome Back!")));
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                let agent_alias = match ProtestApp::get_agent_alias(context).await {
+                    ErrorReturn::Object(agent_alias) => agent_alias,
+                    ErrorReturn::Error(err) => {
+                        return Ok(Some(String::from(format!(
+                            "System Error: Could Not Retrieve Agent Alias. {}",
+                            err,
+                        ))))
+                    }
+                };
+                return Ok(Some(String::from(format!(
+                    "Success: Welcome Back {}!",
+                    agent_alias
+                ))));
             }
             Err(err) => {
                 context.client.end_transaction().await;
@@ -537,8 +653,8 @@ impl ProtestApp {
         };
         // step 1.1: check that client has not joined a team
         match agent.coordinator_alias {
-            Some(_) => {}
-            None => {
+            None => {}
+            Some(_) => {
                 return ErrorReturn::Error(String::from(
                     "Client Error: Agent Has Already Joined A Team",
                 ))
@@ -893,6 +1009,7 @@ impl ProtestApp {
         std::thread::sleep(std::time::Duration::from_secs(2));
         // step 5: promote own role to coordinator
         agent.role = Role::Coordinator;
+        agent.coordinator_alias = Some(agent.alias.clone());
         let json_agent = serde_json::to_string(&agent).unwrap();
         let res = context.client.start_transaction();
         if res.is_err() {
@@ -1404,6 +1521,19 @@ impl ProtestApp {
 
     // PART 3: PRIVATE MESSAGING FUNCTIONALITY
 
+    // helper: convert MessageType string to MessageType enum
+    fn str_to_message_type(message_type_str: String) -> MessageType {
+        if message_type_str == "Message".to_string() {
+            return MessageType::Message;
+        } else if message_type_str == "Alert".to_string() {
+            return MessageType::Alert;
+        } else if message_type_str == "Announcement".to_string() {
+            return MessageType::Announcement;
+        } else {
+            return MessageType::Message;
+        }
+    }
+
     // helper: get the current time (isolated for hot swappable purposes)
     async fn get_time() -> OffsetDateTime {
         return OffsetDateTime::now_utc();
@@ -1414,31 +1544,1002 @@ impl ProtestApp {
         args: ArgMatches,
         context: &mut Arc<Self>,
     ) -> ReplResult<Option<String>> {
-        match 
+        let agent_to_alias = args
+            .get_one::<String>("agent_to_alias")
+            .unwrap()
+            .to_string();
+        let message = args.get_one::<String>("message").unwrap().to_string();
+        let message_type = args.get_one::<String>("message_type");
+        let message_type = match message_type {
+            Some(message_type_str) => message_type_str.to_string(),
+            None => String::from(""),
+        };
+        let message_type = ProtestApp::str_to_message_type(message_type);
+        match ProtestApp::send_private_message(
+            agent_to_alias.clone(),
+            message,
+            message_type,
+            context,
+        )
+        .await
+        {
+            ErrorReturn::Object(time) => {
+                return Ok(Some(String::from(format!(
+                    "Success: Message Sent To {} At Time {}",
+                    agent_to_alias, time
+                ))))
+            }
+            ErrorReturn::Error(err) => return Ok(Some(err)),
+        }
     }
 
     // not command: send private message to a team member. message associated with team
     async fn send_private_message(
         agent_to_alias: String,
         message: String,
+        message_type: MessageType,
         context: &mut Arc<Self>,
-    ) -> ErrorReturn<String> {
-        return ErrorReturn::Error(String::from(""));
+    ) -> ErrorReturn<OffsetDateTime> {
+        // step 1: check that device exists
+        if !context.exists_device().await {
+            return ErrorReturn::Error(String::from(
+                "Client Error: Device Does Not Exist. Please Login First",
+            ));
+        }
+        // step 2.0: prepare a message to append
+        let new_message = Message {
+            message,
+            time_stamp: ProtestApp::get_time().await,
+            message_type,
+        };
+        let time_stamp = new_message.time_stamp.clone();
+        // step 2: does private messages vector exist? if not, then create & share one
+        let agent = match ProtestApp::get_agent_info(context).await {
+            ErrorReturn::Object(agent_object) => agent_object,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        let data_id = String::from(format!(
+            "private_messages/{}/{}/{}",
+            agent.coordinator_alias.unwrap(),
+            agent.alias,
+            agent_to_alias
+        ));
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        let mut private_messages: PrivateMessageChain;
+        let mut created_new_chain = false;
+        match context.client.get_data(&data_id.clone()).await {
+            // step 2.1: in this case, append to existing message chain
+            Ok(Some(private_messages_object)) => {
+                private_messages =
+                    serde_json::from_str(private_messages_object.data_val()).unwrap();
+                // make a just in case check: new message time stamp doesn't violate
+                // message chain's time stamp (i.e. it's strictly greater)
+                if !(new_message.time_stamp > private_messages.last_message_time_stamp) {
+                    return ErrorReturn::Error(String::from("System Error: New Message's Timestamp Violates Time Invariant of Message Chain"));
+                }
+                private_messages.message_chain.push(new_message);
+            }
+            // step 2.2: in this case, create a new message chain
+            Ok(None) => {
+                private_messages = PrivateMessageChain {
+                    agent_from_alias: agent.alias,
+                    agent_to_alias: agent_to_alias.clone(),
+                    last_message_time_stamp: new_message.time_stamp.clone(),
+                    message_chain: vec![new_message],
+                };
+                created_new_chain = true
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Private Messages Could Not Be Retrieved. {}",
+                    err
+                )));
+            }
+        }
+        context.client.end_transaction().await;
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        // step 3: commit message chain to key value store
+        let json_private_messages = serde_json::to_string(&private_messages).unwrap();
+        match context
+            .client
+            .set_data(
+                data_id.clone(),
+                String::from(format!("private_messages")),
+                json_private_messages,
+                None,
+                None,
+                false,
+            )
+            .await
+        {
+            Ok(_) => {
+                context.client.end_transaction().await;
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Private Messages Could Not Be Updated. {}",
+                    err.to_string()
+                )));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // step 4: share message chain with message recipient
+        let agent_list = match ProtestApp::get_agent_list(context).await {
+            ErrorReturn::Object(agent_list) => agent_list,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let reader = match agent_list.follower_list.get(&agent_to_alias) {
+            Some(agent) => agent.clone(),
+            None => {
+                if agent_list.coordinator.alias == agent_to_alias {
+                    agent_list.coordinator
+                } else {
+                    return ErrorReturn::Error(String::from(format!(
+                        "Client Error: {} Is Not A Part Of The Team",
+                        agent_to_alias.clone()
+                    )));
+                }
+            }
+        };
+        if created_new_chain {
+            let result = context.client.start_transaction();
+            if result.is_err() {
+                return ErrorReturn::Error(String::from(
+                    "System Error: Unable To Start Transaction",
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            match context.client.add_contact(reader.id.clone()).await {
+                Ok(_) => {
+                    context.client.end_transaction().await;
+                }
+                Err(err) => {
+                    context.client.end_transaction().await;
+                    return ErrorReturn::Error(String::from(format!(
+                        "System Error: Unable To Add Agent To As Contact. {}",
+                        err
+                    )));
+                }
+            }
+            let result = context.client.start_transaction();
+            if result.is_err() {
+                return ErrorReturn::Error(String::from(
+                    "System Error: Unable To Start Transaction",
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let readers = vec![&reader.name];
+            match context.client.add_do_readers(data_id, readers).await {
+                Ok(_) => {
+                    context.client.end_transaction().await;
+                }
+                Err(err) => {
+                    context.client.end_transaction().await;
+                    return ErrorReturn::Error(String::from(format!(
+                        "System Error: Message Chain Could Not Be Shared. {}",
+                        err
+                    )));
+                }
+            }
+        }
+        return ErrorReturn::Object(time_stamp);
     }
 
-    // command: check
+    // helper: returns formatted offset dat time
+    fn format_offset_date_time(time: OffsetDateTime) -> String {
+        String::from(format!(
+            "{}-{}-{} {}:{}:{}",
+            time.year(),
+            time.month() as u32,
+            time.day(),
+            time.hour(),
+            time.minute(),
+            time.second()
+        ))
+    }
 
-    // not command:
+    // helper: returns formatted messages for the command line
+    fn format_message_chains<T: MessageChain>(
+        self_message_chain: Option<T>,
+        other_message_chains: Vec<T>,
+        num_last_messages: Option<u32>,
+    ) -> String {
+        // part 1: combine all messages into a vector (plus hacky formatting steps too)
+        let mut messages_vector: Vec<Message> = Vec::new();
+        match self_message_chain {
+            Some(self_message_chain) => {
+                let mut count: u32 = 0;
+                for message in &mut self_message_chain.message_chain() {
+                    let to_prepend = String::from(format!(
+                        "{} {} {}: {}: ",
+                        count,
+                        ProtestApp::format_offset_date_time(message.time_stamp),
+                        message.message_type,
+                        self_message_chain.agent_from_alias(),
+                    ));
+                    let to_prepend = format!("{:>45}", to_prepend);
+                    message.message.insert_str(0, &to_prepend);
+                    count += 1;
+                    messages_vector.push(message.clone());
+                }
+            }
+            None => {}
+        }
+        for message_chain in other_message_chains {
+            for mut message in message_chain.message_chain() {
+                let to_prepend = String::from(format!(
+                    "{} {}: {}: ",
+                    ProtestApp::format_offset_date_time(message.time_stamp),
+                    message.message_type,
+                    message_chain.agent_from_alias(),
+                ));
+                let to_prepend = format!("{:>45}", to_prepend);
+                message.message.insert_str(0, &to_prepend);
+                messages_vector.push(message.clone());
+            }
+        }
+        // part 2: sort the messages (by increasing time)
+        messages_vector.sort();
+        // part 3: leave only num_last_messages of messages in the vector
+        match num_last_messages {
+            Some(num_last_messages) => {
+                let num_last_messages: usize = num_last_messages as usize;
+                if messages_vector.len() > num_last_messages {
+                    let start_idx = messages_vector.len() - num_last_messages;
+                    messages_vector = messages_vector[start_idx..].to_vec();
+                }
+            }
+            None => {}
+        }
+        // part 4: convert the messages vector into a string to return
+        let mut messages = String::from("");
+        for message in messages_vector {
+            messages.push_str(&String::from(format!("{}\n", message.message)));
+        }
+        messages.pop();
+        return messages;
+    }
 
-    // command:
+    // command: get message chain with an agent. optionally get last num messages
+    async fn get_private_messages_cmd(
+        args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        let agent_to_alias = args
+            .get_one::<String>("agent_to_alias")
+            .unwrap()
+            .to_string();
+        let num_last_messages = args.get_one::<String>("num_last_messages");
+        let num_last_messages: Option<u32> =
+            num_last_messages.map(|s| s.parse::<u32>().ok()).flatten();
+        match ProtestApp::get_private_messages(agent_to_alias, num_last_messages, context)
+            .await
+        {
+            ErrorReturn::Object(result) => {
+                return Ok(Some(String::from(format!("{}", result))))
+            }
+            ErrorReturn::Error(err) => return Ok(Some(err)),
+        }
+    }
+
+    // not command: get message chain with an agent. optionally get last num messages
+    async fn get_private_messages(
+        agent_to_alias: String,
+        num_last_messages: Option<u32>,
+        context: &mut Arc<Self>,
+    ) -> ErrorReturn<String> {
+        // step 0: check that device exists
+        if !context.exists_device().await {
+            return ErrorReturn::Error(String::from(
+                "Client Error: Device Does Not Exist. Please Login First",
+            ));
+        }
+        let agent = match ProtestApp::get_agent_info(context).await {
+            ErrorReturn::Object(agent_object) => agent_object,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        let mut both_nonexistent = true;
+        // step 1: get agent_self to agent_to messages
+        let data_id = String::from(format!(
+            "private_messages/{}/{}/{}",
+            agent.coordinator_alias.clone().unwrap(),
+            agent.alias,
+            agent_to_alias
+        ));
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        let self_to_message_chain: Option<PrivateMessageChain>;
+        match context.client.get_data(&data_id.clone()).await {
+            Ok(Some(private_messages_object)) => {
+                context.client.end_transaction().await;
+                let private_messages =
+                    serde_json::from_str(private_messages_object.data_val()).unwrap();
+                self_to_message_chain = Some(private_messages);
+                both_nonexistent = false;
+            }
+            Ok(None) => {
+                context.client.end_transaction().await;
+                self_to_message_chain = None
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Private Messages Could Not Be Retrieved. {}",
+                    err
+                )));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // step 2: get agent_to to agent_self messages
+        let data_id = String::from(format!(
+            "private_messages/{}/{}/{}",
+            agent.coordinator_alias.clone().unwrap(),
+            agent_to_alias,
+            agent.alias
+        ));
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        let to_self_message_chain: Option<PrivateMessageChain>;
+        match context.client.get_data(&data_id.clone()).await {
+            Ok(Some(private_messages_object)) => {
+                context.client.end_transaction().await;
+                let private_messages =
+                    serde_json::from_str(private_messages_object.data_val()).unwrap();
+                to_self_message_chain = Some(private_messages);
+                both_nonexistent = false;
+            }
+            Ok(None) => {
+                context.client.end_transaction().await;
+                to_self_message_chain = None
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Private Messages Could Not Be Retrieved. {}",
+                    err
+                )));
+            }
+        }
+        let vec_to_self_message_chain = match to_self_message_chain {
+            Some(unwrapped_message_chain) => {
+                vec![unwrapped_message_chain]
+            }
+            None => Vec::new(),
+        };
+        // step 3: return formatted messages
+        if both_nonexistent {
+            return ErrorReturn::Error(String::from(format!(
+                "Client Error: There Are No Messages Between {} And {}",
+                agent.alias, agent_to_alias
+            )));
+        }
+        return ErrorReturn::Object(ProtestApp::format_message_chains(
+            self_to_message_chain,
+            vec_to_self_message_chain,
+            num_last_messages,
+        ));
+    }
+
+    // command: return all new (since last time) (also message)
 
     // not command
+
+    // command: delete message that matches index. otherwise delete last message
+    async fn delete_private_message_cmd(
+        args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        let agent_to_alias = args
+            .get_one::<String>("agent_to_alias")
+            .unwrap()
+            .to_string();
+        let message_index = args.get_one::<String>("message_index");
+        let message_index: Option<u32> =
+            message_index.map(|s| s.parse::<u32>().ok()).flatten();
+        match ProtestApp::delete_private_message(agent_to_alias, message_index, context)
+            .await
+        {
+            ErrorReturn::Object(_) => match message_index {
+                Some(message_index) => {
+                    return Ok(Some(String::from(format!(
+                        "Success: Message {} Deleted",
+                        message_index
+                    ))))
+                }
+                None => {
+                    return Ok(Some(String::from(format!(
+                        "Success: Last Message Deleted",
+                    ))))
+                }
+            },
+            ErrorReturn::Error(err) => return Ok(Some(err)),
+        }
+    }
+
+    // not command: delete message that matches index. otherwise delete last message
+    async fn delete_private_message(
+        agent_to_alias: String,
+        message_index: Option<u32>,
+        context: &mut Arc<Self>,
+    ) -> ErrorReturn<String> {
+        // step 1: get agent_to_alias message chain
+        // step 0: check that device exists
+        if !context.exists_device().await {
+            return ErrorReturn::Error(String::from(
+                "Client Error: Device Does Not Exist. Please Login First",
+            ));
+        }
+        let agent = match ProtestApp::get_agent_info(context).await {
+            ErrorReturn::Object(agent_object) => agent_object,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        // step 1: get agent_self to agent_to messages
+        let data_id = String::from(format!(
+            "private_messages/{}/{}/{}",
+            agent.coordinator_alias.clone().unwrap(),
+            agent.alias,
+            agent_to_alias
+        ));
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        let mut self_to_message_chain: PrivateMessageChain;
+        match context.client.get_data(&data_id.clone()).await {
+            Ok(Some(private_messages_object)) => {
+                context.client.end_transaction().await;
+                let private_messages =
+                    serde_json::from_str(private_messages_object.data_val()).unwrap();
+                self_to_message_chain = private_messages;
+            }
+            Ok(None) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "Client Error: There Are No Messages From {} To {}",
+                    agent.alias, agent_to_alias
+                )));
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Private Messages Could Not Be Retrieved. {}",
+                    err
+                )));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // step 2: delete appropriate message
+        match message_index {
+            Some(message_index) => {
+                let message_index: usize = message_index as usize;
+                if message_index < self_to_message_chain.message_chain.len() {
+                    self_to_message_chain.message_chain[message_index].message =
+                        String::from(format!("<deleted by {}>", agent.alias))
+                }
+            }
+            None => {
+                if self_to_message_chain.message_chain.len() > 0 {
+                    let len = self_to_message_chain.message_chain.len();
+                    self_to_message_chain.message_chain[len - 1].message =
+                        String::from(format!("<deleted by {}>", agent.alias))
+                }
+            }
+        }
+        // step 3: commit change to key value store
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        let json_private_messages =
+            serde_json::to_string(&self_to_message_chain).unwrap();
+        match context
+            .client
+            .set_data(
+                data_id.clone(),
+                String::from(format!("private_messages")),
+                json_private_messages,
+                None,
+                None,
+                false,
+            )
+            .await
+        {
+            Ok(_) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Object(String::from(""));
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Private Messages Could Not Be Updated. {}",
+                    err.to_string()
+                )));
+            }
+        }
+    }
 
     // PART 4: PUBLIC MESSAGING FUNCTIONALITY
 
-    // command
+    // command: send public message to all team members. message associated with team
+    async fn send_public_message_cmd(
+        args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        let message = args.get_one::<String>("message").unwrap().to_string();
+        let message_type = args.get_one::<String>("message_type");
+        let message_type = match message_type {
+            Some(message_type_str) => message_type_str.to_string(),
+            None => String::from(""),
+        };
+        let message_type = ProtestApp::str_to_message_type(message_type);
+        match ProtestApp::send_public_message(message, message_type, context).await {
+            ErrorReturn::Object(time) => {
+                return Ok(Some(String::from(format!(
+                    "Success: Message Sent To Team At Time {}",
+                    time
+                ))))
+            }
+            ErrorReturn::Error(err) => return Ok(Some(err)),
+        }
+    }
+
+    // not command: send public message to all team members. message associated with team
+    async fn send_public_message(
+        message: String,
+        message_type: MessageType,
+        context: &mut Arc<Self>,
+    ) -> ErrorReturn<OffsetDateTime> {
+        // step 1: check that device exists
+        if !context.exists_device().await {
+            return ErrorReturn::Error(String::from(
+                "Client Error: Device Does Not Exist. Please Login First",
+            ));
+        }
+        // step 2.0: prepare a message to append
+        let new_message = Message {
+            message,
+            time_stamp: ProtestApp::get_time().await,
+            message_type,
+        };
+        let time_stamp = new_message.time_stamp.clone();
+        // step 2: does public messages vector exist? if not, then create & share one
+        let agent = match ProtestApp::get_agent_info(context).await {
+            ErrorReturn::Object(agent_object) => agent_object,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        let data_id = String::from(format!(
+            "public_messages/{}/{}",
+            agent.coordinator_alias.unwrap(),
+            agent.alias,
+        ));
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        let mut public_messages: PublicMessageChain;
+        match context.client.get_data(&data_id.clone()).await {
+            // step 2.1: in this case, append to existing message chain
+            Ok(Some(private_messages_object)) => {
+                public_messages =
+                    serde_json::from_str(private_messages_object.data_val()).unwrap();
+                // make a just in case check: new message time stamp doesn't violate
+                // message chain's time stamp (i.e. it's strictly greater)
+                if !(new_message.time_stamp > public_messages.last_message_time_stamp) {
+                    return ErrorReturn::Error(String::from("System Error: New Message's Timestamp Violates Time Invariant of Message Chain"));
+                }
+                public_messages.message_chain.push(new_message);
+            }
+            // step 2.2: in this case, create a new message chain
+            Ok(None) => {
+                public_messages = PublicMessageChain {
+                    agent_from_alias: agent.alias.clone(),
+                    last_message_time_stamp: new_message.time_stamp.clone(),
+                    message_chain: vec![new_message],
+                };
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Private Messages Could Not Be Retrieved. {}",
+                    err
+                )));
+            }
+        }
+        context.client.end_transaction().await;
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        // step 3: commit message chain to key value store
+        let json_public_messages = serde_json::to_string(&public_messages).unwrap();
+        match context
+            .client
+            .set_data(
+                data_id.clone(),
+                String::from(format!("public_messages")),
+                json_public_messages,
+                None,
+                None,
+                false,
+            )
+            .await
+        {
+            Ok(_) => {
+                context.client.end_transaction().await;
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Public Messages Could Not Be Updated. {}",
+                    err.to_string()
+                )));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // step 4: share message chain with every member in the team (excluding self)
+        let agent_list = match ProtestApp::get_agent_list(context).await {
+            ErrorReturn::Object(agent_list) => agent_list,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // step 4.0: add every member in the team as a contact
+        let mut all_agent_list = agent_list.follower_list;
+        all_agent_list
+            .insert(agent_list.coordinator.alias.clone(), agent_list.coordinator);
+        for (alias, agentl) in &all_agent_list {
+            if *alias == agent.alias {
+                continue;
+            }
+            let result = context.client.start_transaction();
+            if result.is_err() {
+                return ErrorReturn::Error(String::from(
+                    "System Error: Unable To Start Transaction",
+                ));
+            }
+            match context.client.add_contact(agentl.id.clone()).await {
+                Ok(_) => {
+                    context.client.end_transaction().await;
+                }
+                Err(err) => {
+                    context.client.end_transaction().await;
+                    return ErrorReturn::Error(String::from(format!(
+                        "System Error: Unable To Add {} As Contact. {}",
+                        alias, err
+                    )));
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        // step 4.1: add every member in the team as a reader
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let mut readers: Vec<&String> = Vec::new();
+        for (alias, agent_l) in &all_agent_list {
+            if *alias != agent.alias {
+                readers.push(&agent_l.name);
+            }
+        }
+        match context.client.add_do_readers(data_id, readers).await {
+            Ok(_) => {
+                context.client.end_transaction().await;
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Message Chain Could Not Be Shared. {}",
+                    err
+                )));
+            }
+        }
+        return ErrorReturn::Object(time_stamp);
+    }
+
+    // command: return all new (since last time) (also message type)
 
     // not command
+
+    // helper: generates a list of all agent aliases from an agent list
+    fn get_agent_alias_list_vec(agent_list: &AgentList) -> Vec<String> {
+        let mut agent_list_vec = Vec::new();
+        agent_list_vec.push(agent_list.coordinator.alias.clone());
+        for (alias, _agent) in &agent_list.follower_list {
+            agent_list_vec.push(alias.clone())
+        }
+        return agent_list_vec;
+    }
+
+    // command: get public message chain. optionally get last num messages
+    async fn get_public_messages_cmd(
+        args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        let num_last_messages = args.get_one::<String>("num_last_messages");
+        let num_last_messages: Option<u32> =
+            num_last_messages.map(|s| s.parse::<u32>().ok()).flatten();
+        match ProtestApp::get_public_messages(num_last_messages, context).await {
+            ErrorReturn::Object(result) => {
+                return Ok(Some(String::from(format!("{}", result))))
+            }
+            ErrorReturn::Error(err) => return Ok(Some(err)),
+        }
+    }
+
+    // not command: get public message chain. optionally get last num messages
+    async fn get_public_messages(
+        num_last_messages: Option<u32>,
+        context: &mut Arc<Self>,
+    ) -> ErrorReturn<String> {
+        // step 0: check that device exists
+        if !context.exists_device().await {
+            return ErrorReturn::Error(String::from(
+                "Client Error: Device Does Not Exist. Please Login First",
+            ));
+        }
+        let agent = match ProtestApp::get_agent_info(context).await {
+            ErrorReturn::Object(agent_object) => agent_object,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        let mut both_nonexistent = true;
+        // step 1: get agent_self to agent_to messages
+        let data_id = String::from(format!(
+            "public_messages/{}/{}",
+            agent.coordinator_alias.clone().unwrap(),
+            agent.alias,
+        ));
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        let self_to_message_chain: Option<PublicMessageChain>;
+        match context.client.get_data(&data_id.clone()).await {
+            Ok(Some(public_messages_object)) => {
+                context.client.end_transaction().await;
+                let public_messages =
+                    serde_json::from_str(public_messages_object.data_val()).unwrap();
+                self_to_message_chain = Some(public_messages);
+                both_nonexistent = false;
+            }
+            Ok(None) => {
+                context.client.end_transaction().await;
+                self_to_message_chain = None
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Public Messages Could Not Be Retrieved. {}",
+                    err
+                )));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // step 2.0: generate a list of agent aliases
+        let agent_aliases: Vec<String>;
+        match ProtestApp::get_agent_list(context).await {
+            ErrorReturn::Object(agent_list) => {
+                agent_aliases = ProtestApp::get_agent_alias_list_vec(&agent_list);
+            }
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // step 2: get public messages from all other agents
+        let mut vec_message_chains: Vec<PublicMessageChain> = Vec::new();
+        for agent_a in agent_aliases {
+            if agent_a == agent.alias {
+                continue;
+            }
+            let data_id = String::from(format!(
+                "public_messages/{}/{}",
+                agent.coordinator_alias.clone().unwrap(),
+                agent_a
+            ));
+            let result = context.client.start_transaction();
+            if result.is_err() {
+                return ErrorReturn::Error(String::from(
+                    "System Error: Unable To Start Transaction",
+                ));
+            }
+            let public_message_chain: Option<PublicMessageChain>;
+            match context.client.get_data(&data_id.clone()).await {
+                Ok(Some(public_messages_object)) => {
+                    context.client.end_transaction().await;
+                    let public_messages =
+                        serde_json::from_str(public_messages_object.data_val()).unwrap();
+                    public_message_chain = Some(public_messages);
+                    both_nonexistent = false;
+                }
+                Ok(None) => {
+                    context.client.end_transaction().await;
+                    public_message_chain = None
+                }
+                Err(err) => {
+                    context.client.end_transaction().await;
+                    return ErrorReturn::Error(String::from(format!(
+                        "System Error: Public Messages Could Not Be Retrieved. {}",
+                        err
+                    )));
+                }
+            }
+            match public_message_chain {
+                Some(unwrapped_message_chain) => {
+                    vec_message_chains.push(unwrapped_message_chain);
+                }
+                None => {}
+            };
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        // step 3: return formatted messages
+        if both_nonexistent {
+            return ErrorReturn::Error(String::from(
+                "Client Error: There Are No Public Messages",
+            ));
+        }
+        return ErrorReturn::Object(ProtestApp::format_message_chains(
+            self_to_message_chain,
+            vec_message_chains,
+            num_last_messages,
+        ));
+    }
+
+    // command: delete message that matches index. otherwise delete last message
+    async fn delete_public_message_cmd(
+        args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        let message_index = args.get_one::<String>("message_index");
+        let message_index: Option<u32> =
+            message_index.map(|s| s.parse::<u32>().ok()).flatten();
+        match ProtestApp::delete_public_message(message_index, context).await {
+            ErrorReturn::Object(_) => match message_index {
+                Some(message_index) => {
+                    return Ok(Some(String::from(format!(
+                        "Success: Message {} Deleted",
+                        message_index
+                    ))))
+                }
+                None => {
+                    return Ok(Some(String::from(format!(
+                        "Success: Last Message Deleted",
+                    ))))
+                }
+            },
+            ErrorReturn::Error(err) => return Ok(Some(err)),
+        }
+    }
+
+    // not command: delete message that matches index. otherwise delete last message
+    async fn delete_public_message(
+        message_index: Option<u32>,
+        context: &mut Arc<Self>,
+    ) -> ErrorReturn<String> {
+        // step 1: get agent_to_alias message chain
+        // step 0: check that device exists
+        if !context.exists_device().await {
+            return ErrorReturn::Error(String::from(
+                "Client Error: Device Does Not Exist. Please Login First",
+            ));
+        }
+        let agent = match ProtestApp::get_agent_info(context).await {
+            ErrorReturn::Object(agent_object) => agent_object,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        // step 1: get agent_self to agent_to messages
+        let data_id = String::from(format!(
+            "public_messages/{}/{}",
+            agent.coordinator_alias.clone().unwrap(),
+            agent.alias,
+        ));
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        let mut self_to_message_chain: PublicMessageChain;
+        match context.client.get_data(&data_id.clone()).await {
+            Ok(Some(public_messages_object)) => {
+                context.client.end_transaction().await;
+                let public_messages =
+                    serde_json::from_str(public_messages_object.data_val()).unwrap();
+                self_to_message_chain = public_messages;
+            }
+            Ok(None) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "Client Error: There Are No Messages From {}",
+                    agent.alias
+                )));
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Public Messages Could Not Be Retrieved. {}",
+                    err
+                )));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // step 2: delete appropriate message
+        match message_index {
+            Some(message_index) => {
+                let message_index: usize = message_index as usize;
+                if message_index < self_to_message_chain.message_chain.len() {
+                    self_to_message_chain.message_chain[message_index].message =
+                        String::from(format!("<deleted by {}>", agent.alias))
+                }
+            }
+            None => {
+                if self_to_message_chain.message_chain.len() > 0 {
+                    let len = self_to_message_chain.message_chain.len();
+                    self_to_message_chain.message_chain[len - 1].message =
+                        String::from(format!("<deleted by {}>", agent.alias))
+                }
+            }
+        }
+        // step 3: commit change to key value store
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        let json_public_messages = serde_json::to_string(&self_to_message_chain).unwrap();
+        match context
+            .client
+            .set_data(
+                data_id.clone(),
+                String::from(format!("public_messages")),
+                json_public_messages,
+                None,
+                None,
+                false,
+            )
+            .await
+        {
+            Ok(_) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Object(String::from(""));
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Public Messages Could Not Be Updated. {}",
+                    err.to_string()
+                )));
+            }
+        }
+    }
 
     // PART 5: LOCATION DATABASE FUNCTIONALITY
 
@@ -1446,7 +2547,23 @@ impl ProtestApp {
 
     // not command
 
+    // command
+
+    // not command
+
+    // command
+
+    // not command
+
     // PART 6: OPERATION COMMIT FUNCTIONALITY
+
+    // command
+
+    // not command
+
+    // command
+
+    // not command
 
     // command
 
@@ -1494,12 +2611,6 @@ async fn main() -> ReplResult<()> {
         .with_command_async(
             Command::new("ch").about("check_join_team_request"),
             |_, context| Box::pin(ProtestApp::check_join_team_request_cmd(context)),
-        )
-        .with_command_async(
-            Command::new("signup_agent")
-                .arg(Arg::new("alias").required(true))
-                .about("signup_agent <alias>"),
-            |args, context| Box::pin(ProtestApp::signup_agent_cmd(args, context)),
         )
         .with_command_async(
             Command::new("dump_data").about("dump_data"),
@@ -1577,6 +2688,52 @@ async fn main() -> ReplResult<()> {
         .with_command_async(
             Command::new("check_join_team_request").about("check_join_team_request"),
             |_, context| Box::pin(ProtestApp::check_join_team_request_cmd(context)),
+        )
+        .with_command_async(
+            Command::new("send_private_message")
+                .arg(Arg::new("agent_to_alias").required(true))
+                .arg(Arg::new("message").required(true))
+                .arg(Arg::new("message_type").required(false))
+                .about("send_private_message <message> <message_type>"),
+            |args, context| Box::pin(ProtestApp::send_private_message_cmd(args, context)),
+        )
+        .with_command_async(
+            Command::new("get_private_messages")
+                .arg(Arg::new("agent_to_alias").required(true))
+                .arg(Arg::new("num_last_messages").required(false))
+                .about("get_private_messages <agent_to_alias> <num_last_messages>"),
+            |args, context| Box::pin(ProtestApp::get_private_messages_cmd(args, context)),
+        )
+        .with_command_async(
+            Command::new("delete_private_message")
+                .arg(Arg::new("agent_to_alias").required(true))
+                .arg(Arg::new("message_index").required(false))
+                .about("delete_private_message <agent_to_alias> <message_index>"),
+            |args, context| {
+                Box::pin(ProtestApp::delete_private_message_cmd(args, context))
+            },
+        )
+        .with_command_async(
+            Command::new("send_public_message")
+                .arg(Arg::new("message").required(true))
+                .arg(Arg::new("message_type").required(false))
+                .about("send_public_message <message> <message_type>"),
+            |args, context| Box::pin(ProtestApp::send_public_message_cmd(args, context)),
+        )
+        .with_command_async(
+            Command::new("get_public_messages")
+                .arg(Arg::new("num_last_messages").required(false))
+                .about("get_public_messages <num_last_messages>"),
+            |args, context| Box::pin(ProtestApp::get_public_messages_cmd(args, context)),
+        )
+        .with_command_async(
+            Command::new("delete_public_message")
+                .arg(Arg::new("agent_to_alias").required(true))
+                .arg(Arg::new("message_index").required(false))
+                .about("delete_public_message <agent_to_alias> <message_index>"),
+            |args, context| {
+                Box::pin(ProtestApp::delete_public_message_cmd(args, context))
+            },
         );
     repl.run_async().await
 }
