@@ -5,10 +5,6 @@
 // diagnosis ---> internal issue. data is lost if all devices associated with the id are
 // closed. temporary hack: make sure that original device associated with the id is open
 
-// TODO: include a private message check, that you're not sending a message to yourself
-
-// TODO: add team name functionality to application (for fun if time is remaining)
-
 // scuba related imports
 use tank::client::TankClient;
 use tank::data::ScubaData;
@@ -22,6 +18,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 // time functionality import
 use time::OffsetDateTime;
+// coordinate functionality import
+use geo::{coord, Coord};
 // miscellanious imports
 use std::collections::HashMap;
 use strum_macros::Display;
@@ -50,6 +48,12 @@ use strum_macros::Display;
 // "public_messages_info"
 // agent: write
 
+// "agent_location"
+// agent: write
+
+// "location_database/{coordinator_alias}/{agent_alias}"
+// agent: write. followers + coordinator: read
+
 // REFERENCE: how to use debug commands for quick team creation
 
 // note! ccc returns an id name, which you must feed into ca, cb, cc
@@ -64,6 +68,8 @@ use strum_macros::Display;
 // window 1:     ca      ch
 // window 2:     cb      ch
 // window 3:     cc      ch
+
+const AUTO_LOCATION: [f64; 2] = [40.3449, -74.6528];
 
 enum ErrorReturn<T> {
     Error(String),
@@ -187,6 +193,25 @@ enum MessageType {
     Message,
     Alert,
     Announcement,
+}
+
+#[derive(Serialize, Deserialize)]
+enum AgentLocation {
+    Auto,
+    Manual(Coord<f64>),
+}
+
+#[derive(Serialize, Deserialize)]
+struct Location {
+    point: Coord<f64>,
+    location_type: LocationType,
+    info: String,
+}
+
+#[derive(Serialize, Deserialize, Display, PartialEq, Clone)]
+enum LocationType {
+    Resource,
+    Danger,
 }
 
 // application instance
@@ -931,8 +956,6 @@ impl ProtestApp {
             }
         }
     }
-
-    // TODO: return the actual Id Name in place of the placeholder success message
 
     // command: promote agent to coordinator and create agent list
     async fn create_team_cmd(context: &mut Arc<Self>) -> ReplResult<Option<String>> {
@@ -1682,6 +1705,12 @@ impl ProtestApp {
             ErrorReturn::Object(agent_object) => agent_object,
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         };
+        // aside: check that agent is not sending private message to himself
+        if agent.alias == agent_to_alias {
+            return ErrorReturn::Error(String::from(
+                "Client Error: Agent Cannot Send Private Message To Themself",
+            ));
+        }
         let data_id = String::from(format!(
             "private_messages/{}/{}/{}",
             agent.coordinator_alias.unwrap(),
@@ -2101,6 +2130,67 @@ impl ProtestApp {
         ));
     }
 
+    // helper: returns formatted messages for the command line
+    fn format_message_chains_t<T: MessageChain>(
+        self_message_chain: Option<T>,
+        other_message_chains: Vec<T>,
+        greater_than_timestamp: Option<OffsetDateTime>,
+    ) -> String {
+        // part 1: combine all messages into a vector (plus hacky formatting steps too)
+        let mut messages_vector: Vec<Message> = Vec::new();
+        match self_message_chain {
+            Some(self_message_chain) => {
+                let mut count: u32 = 0;
+                for message in &mut self_message_chain.message_chain() {
+                    let to_prepend = String::from(format!(
+                        "{} {} {}: {}: ",
+                        count,
+                        ProtestApp::format_offset_date_time(message.time_stamp),
+                        message.message_type,
+                        self_message_chain.agent_from_alias(),
+                    ));
+                    let to_prepend = format!("{:>45}", to_prepend);
+                    message.message.insert_str(0, &to_prepend);
+                    count += 1;
+                    messages_vector.push(message.clone());
+                }
+            }
+            None => {}
+        }
+        for message_chain in other_message_chains {
+            for mut message in message_chain.message_chain() {
+                let to_prepend = String::from(format!(
+                    "{} {}: {}: ",
+                    ProtestApp::format_offset_date_time(message.time_stamp),
+                    message.message_type,
+                    message_chain.agent_from_alias(),
+                ));
+                let to_prepend = format!("{:>45}", to_prepend);
+                message.message.insert_str(0, &to_prepend);
+                messages_vector.push(message.clone());
+            }
+        }
+        // part 2: sort the messages (by increasing time)
+        messages_vector.sort();
+        // part 3: leave only num_last_messages of messages in the vector
+        match greater_than_timestamp {
+            Some(greater_than_timestamp) => {
+                messages_vector = messages_vector
+                    .into_iter()
+                    .filter(|message| message.time_stamp > greater_than_timestamp)
+                    .collect();
+            }
+            None => {}
+        }
+        // part 4: convert the messages vector into a string to return
+        let mut messages = String::from("");
+        for message in messages_vector {
+            messages.push_str(&String::from(format!("{}\n", message.message)));
+        }
+        messages.pop();
+        return messages;
+    }
+
     // command: get message chain with an agent. messages are since last time checked
     async fn get_new_private_messages_cmd(
         args: ArgMatches,
@@ -2302,11 +2392,11 @@ impl ProtestApp {
                 agent.alias, agent_to_alias
             )));
         }
-        print!("{:?}", time_last_message_viewed);
-        return ErrorReturn::Object(ProtestApp::format_message_chains(
+        // print!("{:?}", time_last_message_viewed);
+        return ErrorReturn::Object(ProtestApp::format_message_chains_t(
             self_to_message_chain,
             vec_to_self_message_chain,
-            None,
+            time_last_message_viewed,
         ));
     }
 
@@ -2903,33 +2993,812 @@ impl ProtestApp {
 
     // PART 5: LOCATION DATABASE FUNCTIONALITY
 
-    // command update own location
+    // command: update agent's location
+    async fn update_agent_location_cmd(
+        args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        let agent_location: AgentLocation;
+        let x_location = args.get_one::<String>("longitude").unwrap().to_string();
+        if x_location == "auto" {
+            agent_location = AgentLocation::Auto;
+        } else {
+            let y_location = args.get_one::<String>("latitude").unwrap().to_string();
+            let x_location = x_location.parse::<f64>();
+            let x_location = match x_location {
+                Ok(x_location) => x_location,
+                Err(err) => {
+                    return Ok(Some(String::from(format!(
+                        "longitude Must Be A Floating Point Number. {}",
+                        err
+                    ))))
+                }
+            };
+            let y_location = y_location.parse::<f64>();
+            let y_location = match y_location {
+                Ok(y_location) => y_location,
+                Err(err) => {
+                    return Ok(Some(String::from(format!(
+                        "latitude Must Be A Floating Point Number. {}",
+                        err
+                    ))))
+                }
+            };
+            let point = coord! {x: x_location, y: y_location};
+            agent_location = AgentLocation::Manual(point);
+        }
+        match ProtestApp::update_agent_location(agent_location, context).await {
+            ErrorReturn::Object(_) => {
+                return Ok(Some(String::from(
+                    "Success: Agent Location Has Been Updated",
+                )))
+            }
+            ErrorReturn::Error(err) => return Ok(Some(String::from(format!("{}", err)))),
+        }
+    }
 
-    // not command
+    // not command: update agent's location
+    async fn update_agent_location(
+        agent_location: AgentLocation,
+        context: &mut Arc<Self>,
+    ) -> ErrorReturn<String> {
+        // step 1: check that device exists
+        if !context.exists_device().await {
+            return ErrorReturn::Error(String::from(
+                "Client Error: Device Does Not Exist. Please Login First",
+            ));
+        }
+        // step 2: commit location to key value store
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        let json_agent_location = serde_json::to_string(&agent_location).unwrap();
+        match context
+            .client
+            .set_data(
+                String::from("agent_location"),
+                String::from("agent_location"),
+                json_agent_location,
+                None,
+                None,
+                false,
+            )
+            .await
+        {
+            Ok(_) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Object(String::from(""));
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Private Messages Info Could Not Be Updated. {}",
+                    err.to_string()
+                )));
+            }
+        }
+    }
 
-    // command get (all) from database (filter)
+    // command: get agent's location
+    async fn get_agent_location_cmd(
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        match ProtestApp::get_agent_location(context).await {
+            ErrorReturn::Object(location) => {
+                return Ok(Some(String::from(format!(
+                    "Success: Agent Location Is: longitude: {}. latitude: {}",
+                    location.x, location.y,
+                ))))
+            }
+            ErrorReturn::Error(err) => return Ok(Some(String::from(format!("{}", err)))),
+        }
+    }
 
-    // not command
+    // not command get agent's location
+    async fn get_agent_location(context: &mut Arc<Self>) -> ErrorReturn<Coord> {
+        // step 1: check that device exists
+        if !context.exists_device().await {
+            return ErrorReturn::Error(String::from(
+                "Client Error: Device Does Not Exist. Please Login First",
+            ));
+        }
+        // step 2: get location to key value store
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        match context
+            .client
+            .get_data(&String::from("agent_location"))
+            .await
+        {
+            Ok(Some(agent_location_object)) => {
+                context.client.end_transaction().await;
+                let agent_location: AgentLocation =
+                    serde_json::from_str(agent_location_object.data_val()).unwrap();
+                match agent_location {
+                    AgentLocation::Auto => {
+                        let location = coord! {x: AUTO_LOCATION[0], y: AUTO_LOCATION[1]};
+                        return ErrorReturn::Object(location);
+                    }
+                    AgentLocation::Manual(location) => {
+                        return ErrorReturn::Object(location)
+                    }
+                }
+            }
+            Ok(None) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(
+                    "Client Error: Location Has Not Been Set By Agent",
+                ));
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Public Messages Could Not Be Retrieved. {}",
+                    err
+                )));
+            }
+        }
+    }
 
-    // command add to the database
+    // helper: automatically get agent's location database
+    async fn get_location_database(
+        coordinator_alias: String,
+        agent_alias: String,
+        context: &mut Arc<Self>,
+    ) -> ErrorReturn<Option<Vec<Location>>> {
+        // step 1: check that device exists and start transaction
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        if !context.exists_device().await {
+            context.client.end_transaction().await;
+            return ErrorReturn::Error(String::from(
+                "Client Error: Device Does Not Exist. Please Login First",
+            ));
+        }
+        // step 2: retrieve agent's location database
+        let data_id = String::from(format!(
+            "location_database/{}/{}",
+            coordinator_alias, agent_alias
+        ));
+        match context.client.get_data(&data_id).await {
+            Ok(Some(location_database_obj)) => {
+                context.client.end_transaction().await;
+                let location_database: Vec<Location> =
+                    serde_json::from_str(location_database_obj.data_val()).unwrap();
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                return ErrorReturn::Object(Some(location_database));
+            }
+            Ok(None) => {
+                context.client.end_transaction().await;
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                return ErrorReturn::Object(None);
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Agent Location Database Could Not Be Retrieved. {}",
+                    err
+                )));
+            }
+        }
+    }
 
-    // not command
+    // helper: automatically set agent's location database
+    async fn set_location_database(
+        coordinator_alias: String,
+        agent_alias: String,
+        agent_database: Vec<Location>,
+        context: &mut Arc<Self>,
+    ) -> ErrorReturn<String> {
+        // step 1: check that device exists and start transaction
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        if !context.exists_device().await {
+            context.client.end_transaction().await;
+            return ErrorReturn::Error(String::from(
+                "Client Error: Device Does Not Exist. Please Login First",
+            ));
+        }
+        // step 2: set agent's location database
+        let json_agent_database = serde_json::to_string(&agent_database).unwrap();
+        let data_id = String::from(format!(
+            "location_database/{}/{}",
+            coordinator_alias, agent_alias
+        ));
+        match context
+            .client
+            .set_data(
+                String::from(data_id),
+                String::from("location_database"),
+                json_agent_database,
+                None,
+                None,
+                false,
+            )
+            .await
+        {
+            Ok(_) => {
+                context.client.end_transaction().await;
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                return ErrorReturn::Object(String::from(""));
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Location Database Could Not Be Updated. {}",
+                    err.to_string()
+                )));
+            }
+        }
+    }
+
+    // helper: share an object with every member in the team (excluding self) as readers
+    async fn share_to_team_as_readers(
+        data_id: String,
+        context: &mut Arc<Self>,
+    ) -> ErrorReturn<String> {
+        // step 0: get some information from the key value store first
+        let agent_alias = match ProtestApp::get_agent_alias(context).await {
+            ErrorReturn::Object(agent_alias) => agent_alias,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let agent_list = match ProtestApp::get_agent_list(context).await {
+            ErrorReturn::Object(agent_list) => agent_list,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // step 1: add every member in the team as a contact
+        let mut all_agent_list = agent_list.follower_list;
+        all_agent_list
+            .insert(agent_list.coordinator.alias.clone(), agent_list.coordinator);
+        for (alias, agent) in &all_agent_list {
+            if *alias == agent_alias {
+                continue;
+            }
+            let result = context.client.start_transaction();
+            if result.is_err() {
+                return ErrorReturn::Error(String::from(
+                    "System Error: Unable To Start Transaction",
+                ));
+            }
+            match context.client.add_contact(agent.id.clone()).await {
+                Ok(_) => {
+                    context.client.end_transaction().await;
+                }
+                Err(err) => {
+                    context.client.end_transaction().await;
+                    return ErrorReturn::Error(String::from(format!(
+                        "System Error: Unable To Add {} As Contact. {}",
+                        alias, err
+                    )));
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        // step 2: add every member in the team as a reader
+        let mut readers: Vec<&String> = Vec::new();
+        for (alias, agent) in &all_agent_list {
+            if *alias != agent_alias {
+                readers.push(&agent.name);
+            }
+        }
+        match context.client.add_do_readers(data_id, readers).await {
+            Ok(_) => {
+                context.client.end_transaction().await;
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                return ErrorReturn::Object(String::from(""));
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Message Chain Could Not Be Shared. {}",
+                    err
+                )));
+            }
+        }
+    }
+
+    // command: add location to personal database & share with team
+    async fn add_to_location_database_cmd(
+        args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        // step 1: extract the latitude and the longitude
+        let x_location = args.get_one::<String>("longitude").unwrap().to_string();
+        let y_location = args.get_one::<String>("latitude").unwrap().to_string();
+        let x_location = x_location.parse::<f64>();
+        let x_location = match x_location {
+            Ok(x_location) => x_location,
+            Err(err) => {
+                return Ok(Some(String::from(format!(
+                    "Client Error: longitude Must Be A Floating Point Number. {}",
+                    err
+                ))))
+            }
+        };
+        let y_location = y_location.parse::<f64>();
+        let y_location = match y_location {
+            Ok(y_location) => y_location,
+            Err(err) => {
+                return Ok(Some(String::from(format!(
+                    "Client Error: latitude Must Be A Floating Point Number. {}",
+                    err
+                ))))
+            }
+        };
+        let point = coord! {x: x_location, y: y_location};
+        // step 2: extract the location type
+        let location_type = args.get_one::<String>("location_type").unwrap().to_string();
+        let location_type_enum: LocationType;
+        if location_type == String::from("Resource") {
+            location_type_enum = LocationType::Resource
+        } else if location_type == String::from("Danger") {
+            location_type_enum = LocationType::Danger
+        } else {
+            return Ok(Some(String::from(format!(
+                "Client Error: location_type Must Be Valid",
+            ))));
+        }
+        // step 3: extract the location information
+        let info = args.get_one::<String>("info").unwrap().to_string();
+        // step 4: call the update function
+        match ProtestApp::add_to_location_database(
+            point,
+            location_type_enum,
+            info,
+            context,
+        )
+        .await
+        {
+            ErrorReturn::Object(_) => {
+                return Ok(Some(String::from(
+                    "Success: Location Has Been Added To Database",
+                )))
+            }
+            ErrorReturn::Error(err) => return Ok(Some(String::from(format!("{}", err)))),
+        }
+    }
+
+    // not command: add location to personal database & share with team
+    async fn add_to_location_database(
+        point: Coord,
+        location_type: LocationType,
+        info: String,
+        context: &mut Arc<Self>,
+    ) -> ErrorReturn<String> {
+        let agent = match ProtestApp::get_agent_info(context).await {
+            ErrorReturn::Object(agent) => agent,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let location = Location {
+            point,
+            location_type,
+            info,
+        };
+        if agent.coordinator_alias == None {
+            return ErrorReturn::Error(String::from(
+                "Client Error: Join A Team First Before Attempting To Add Location",
+            ));
+        }
+        // step 1: get agent's location database from key value store and add new location
+        let mut location_database = match ProtestApp::get_location_database(
+            agent.coordinator_alias.clone().unwrap(),
+            agent.alias.clone(),
+            context,
+        )
+        .await
+        {
+            ErrorReturn::Object(some_location_database) => match some_location_database {
+                Some(location_database) => location_database,
+                None => Vec::new(),
+            },
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        location_database.push(location);
+        // step 2: commit new database to key value store
+        match ProtestApp::set_location_database(
+            agent.coordinator_alias.clone().unwrap(),
+            agent.alias.clone(),
+            location_database,
+            context,
+        )
+        .await
+        {
+            ErrorReturn::Object(_) => {}
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        }
+        // step 3: share database with all team members
+        let data_id = String::from(format!(
+            "location_database/{}/{}",
+            agent.coordinator_alias.unwrap().clone(),
+            agent.alias
+        ));
+        match ProtestApp::share_to_team_as_readers(data_id, context).await {
+            ErrorReturn::Object(_) => return ErrorReturn::Object(String::from("")),
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        }
+    }
+
+    // command: remove location from personal database
+    async fn remove_from_location_database_cmd(
+        args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        // step 1: extract the index
+        let index = args.get_one::<String>("index").unwrap().to_string();
+        let index = index.parse::<usize>();
+        let index = match index {
+            Ok(index) => index,
+            Err(err) => {
+                return Ok(Some(String::from(format!(
+                    "Client Error: index Must Be A Valid Index Number. {}",
+                    err
+                ))))
+            }
+        };
+        // step 4: call the remove function
+        match ProtestApp::remove_from_location_database(index, context).await {
+            ErrorReturn::Object(_) => {
+                return Ok(Some(String::from(
+                    "Success: Location Has Been Removed From Database",
+                )))
+            }
+            ErrorReturn::Error(err) => return Ok(Some(String::from(format!("{}", err)))),
+        }
+    }
+
+    // not command: remove location from personal database
+    async fn remove_from_location_database(
+        index: usize,
+        context: &mut Arc<Self>,
+    ) -> ErrorReturn<String> {
+        let agent = match ProtestApp::get_agent_info(context).await {
+            ErrorReturn::Object(agent) => agent,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        if agent.coordinator_alias == None {
+            return ErrorReturn::Error(String::from(
+                "Client Error: Join A Team First Before Attempting To Remove Location",
+            ));
+        }
+        // step 1: get agent's location database from key value store and remove at index
+        let mut location_database = match ProtestApp::get_location_database(
+            agent.coordinator_alias.clone().unwrap(),
+            agent.alias.clone(),
+            context,
+        )
+        .await
+        {
+            ErrorReturn::Object(some_location_database) => match some_location_database {
+                Some(location_database) => location_database,
+                None => Vec::new(),
+            },
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        if index < location_database.len() {
+            location_database.remove(index);
+        } else {
+            return ErrorReturn::Error(String::from(format!(
+                "Client Error: Index {} Is Invalid",
+                index
+            )));
+        }
+        // step 2: commit new database to key value store
+        match ProtestApp::set_location_database(
+            agent.coordinator_alias.clone().unwrap(),
+            agent.alias.clone(),
+            location_database,
+            context,
+        )
+        .await
+        {
+            ErrorReturn::Object(_) => {}
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        }
+        // step 3: share database with all team members
+        let data_id = String::from(format!(
+            "location_database/{}/{}",
+            agent.coordinator_alias.unwrap().clone(),
+            agent.alias
+        ));
+        match ProtestApp::share_to_team_as_readers(data_id, context).await {
+            ErrorReturn::Object(_) => return ErrorReturn::Object(String::from("")),
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        }
+    }
+
+    // helper: format own agent location database
+    fn format_own_location_database(
+        agent_alias: String,
+        location_database: Vec<Location>,
+    ) -> String {
+        let mut formatted_database = String::from("");
+        formatted_database.push_str(&String::from(format!("{}:\n\n", agent_alias)));
+        let mut index: u32 = 0;
+        for location in location_database {
+            formatted_database.push_str(&String::from(format!(
+                "{}: {}: longitude: {}, latitude: {}\n",
+                index, location.location_type, location.point.x, location.point.y
+            )));
+            formatted_database.push_str(&String::from(format!("{}\n\n", location.info)));
+            index += 1;
+        }
+        if formatted_database.len() >= 2 {
+            formatted_database.truncate(formatted_database.len() - 2);
+        }
+        return formatted_database;
+    }
+
+    // command: get own location database
+    async fn get_own_location_database_cmd(
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        match ProtestApp::get_own_location_database(context).await {
+            ErrorReturn::Object(location_database) => {
+                return Ok(Some(String::from(format!("{}", location_database))))
+            }
+            ErrorReturn::Error(err) => return Ok(Some(String::from(format!("{}", err)))),
+        }
+    }
+
+    // not command: get own location database
+    async fn get_own_location_database(context: &mut Arc<Self>) -> ErrorReturn<String> {
+        let agent = match ProtestApp::get_agent_info(context).await {
+            ErrorReturn::Object(agent) => agent,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        if agent.coordinator_alias == None {
+            return ErrorReturn::Error(String::from(
+                "Client Error: Agent Must Have Joined A Team First",
+            ));
+        }
+        match ProtestApp::get_location_database(
+            agent.coordinator_alias.clone().unwrap(),
+            agent.alias.clone(),
+            context,
+        )
+        .await
+        {
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+            ErrorReturn::Object(some_location_database) => match some_location_database {
+                None => {
+                    return ErrorReturn::Error(String::from(
+                        "Client Error: Own Location Database Does Not Exist",
+                    ))
+                }
+                Some(location_database) => {
+                    return ErrorReturn::Object(ProtestApp::format_own_location_database(
+                        agent.alias.clone(),
+                        location_database,
+                    ))
+                }
+            },
+        }
+    }
+
+    // helper: format own agent location database
+    fn format_location_databases(
+        location_databases: Vec<(String, Vec<Location>)>,
+    ) -> String {
+        let mut formatted_databases = String::from("");
+        for location_database in location_databases {
+            let mut formatted_database = String::from("");
+            formatted_database
+                .push_str(&String::from(format!("{}:\n\n", location_database.0)));
+            for location in location_database.1 {
+                formatted_database.push_str(&String::from(format!(
+                    "{}: longitude: {}, latitude: {}\n",
+                    location.location_type, location.point.x, location.point.y
+                )));
+                formatted_database
+                    .push_str(&String::from(format!("{}\n\n", location.info)));
+            }
+            formatted_databases.push_str(&formatted_database);
+        }
+        if formatted_databases.len() >= 2 {
+            formatted_databases.truncate(formatted_databases.len() - 2);
+        }
+        return formatted_databases;
+    }
+
+    // helper: get the haversine distance between 2 coordinates
+    fn haversine_distance(coord1: Coord, coord2: Coord) -> f64 {
+        let lat1 = coord1.y.to_radians();
+        let lon1 = coord1.x.to_radians();
+        let lat2 = coord2.y.to_radians();
+        let lon2 = coord2.x.to_radians();
+        let dlon = lon2 - lon1;
+        let dlat = lat2 - lat1;
+        let a = (dlat / 2.0).sin().powi(2)
+            + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2);
+        let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
+        // radius of the earth in meters
+        let radius = 6371.0 * 1000.0;
+        return radius * c;
+    }
+
+    // helper: filter location database (location type and distance from)
+    async fn filter_location_database(
+        mut location_database: Vec<Location>,
+        location_type: Option<LocationType>,
+        distance_from_agent: Option<f64>,
+        context: &mut Arc<Self>,
+    ) -> ErrorReturn<Vec<Location>> {
+        // step 1: filter by location type
+        match location_type {
+            Some(location_type) => {
+                location_database = location_database
+                    .into_iter()
+                    .filter(|location| location.location_type == location_type)
+                    .collect();
+            }
+            None => {}
+        }
+        // step 2: filter by distance from agent
+        let agent_location = match ProtestApp::get_agent_location(context).await {
+            ErrorReturn::Object(point) => point,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        match distance_from_agent {
+            Some(distance_from_agent) => {
+                location_database = location_database
+                    .into_iter()
+                    .filter(|location| {
+                        ProtestApp::haversine_distance(location.point, agent_location)
+                            <= distance_from_agent
+                    })
+                    .collect();
+            }
+            None => {}
+        }
+        return ErrorReturn::Object(location_database);
+    }
+
+    // command: get locations from database (with location type and distance from filters)
+    async fn get_location_database_cmd(
+        args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        let location_type: Option<LocationType>;
+        let location_type_arg = args.get_one::<String>("location_type").unwrap();
+        if location_type_arg == "All" {
+            location_type = None;
+        } else if location_type_arg == "Danger" {
+            location_type = Some(LocationType::Danger);
+        } else if location_type_arg == "Resource" {
+            location_type = Some(LocationType::Resource);
+        } else {
+            return Ok(Some(String::from(
+                "Client Error: Location Type Is Not Valid",
+            )));
+        }
+        let distance_from_agent: Option<f64>;
+        let distance_from_agent_arg = args.get_one::<String>("distance_from_agent");
+        match distance_from_agent_arg {
+            None => distance_from_agent = None,
+            Some(distance_from_agent_arg) => {
+                let distance_from_agent_arg = distance_from_agent_arg.parse::<f64>();
+                match distance_from_agent_arg {
+                    Ok(distance_from_agent_arg) => {
+                        distance_from_agent = Some(distance_from_agent_arg)
+                    }
+                    Err(err) => {
+                        return Ok(Some(String::from(format!(
+                        "Client Error: distance_from_agent Must Be A Valid Integer. {}",
+                        err
+                    ))))
+                    }
+                }
+            }
+        }
+        match ProtestApp::get_location_database_real(
+            location_type,
+            distance_from_agent,
+            context,
+        )
+        .await
+        {
+            ErrorReturn::Object(location_database) => {
+                return Ok(Some(String::from(format!("{}", location_database))))
+            }
+            ErrorReturn::Error(err) => return Ok(Some(String::from(format!("{}", err)))),
+        }
+    }
+
+    // not command: get locations from database (with location type and distance filters)
+    async fn get_location_database_real(
+        location_type: Option<LocationType>,
+        distance_from_agent: Option<f64>,
+        context: &mut Arc<Self>,
+    ) -> ErrorReturn<String> {
+        // step 1: obtain agent alias list
+        let agent_list = match ProtestApp::get_agent_list(context).await {
+            ErrorReturn::Object(agent_list) => agent_list,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        let mut complete_agent_list = agent_list.follower_list.clone();
+        complete_agent_list.insert(
+            agent_list.coordinator.alias.clone(),
+            agent_list.coordinator.clone(),
+        );
+        // step 2: compile a vector of filtered location databases
+        let mut filtered_location_databases = Vec::new();
+        for (agent_alias, _) in complete_agent_list {
+            match ProtestApp::get_location_database(
+                agent_list.coordinator.alias.clone(),
+                agent_alias.clone(),
+                context,
+            )
+            .await
+            {
+                ErrorReturn::Object(option_location_database) => {
+                    match option_location_database {
+                        Some(mut location_database) => {
+                            location_database =
+                                match ProtestApp::filter_location_database(
+                                    location_database,
+                                    location_type.clone(),
+                                    distance_from_agent,
+                                    context,
+                                )
+                                .await
+                                {
+                                    ErrorReturn::Object(location_database) => {
+                                        location_database
+                                    }
+                                    ErrorReturn::Error(err) => {
+                                        return ErrorReturn::Error(err)
+                                    }
+                                };
+                            filtered_location_databases
+                                .push((agent_alias, location_database))
+                        }
+                        None => {}
+                    }
+                }
+                ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+            }
+        }
+        return ErrorReturn::Object(ProtestApp::format_location_databases(
+            filtered_location_databases,
+        ));
+    }
 
     // PART 6: OPERATION COMMIT FUNCTIONALITY
 
-    // command: put onto voting list
+    // command: make proposal
 
     // not command
 
-    // command vote
+    // command vote for proposal
 
     // not command
 
-    // command see it
+    // command see vote status
 
     // not command
 
-    // command commit it
+    // command commit proposal
 
     // not command
 }
@@ -3111,6 +3980,59 @@ async fn main() -> ReplResult<()> {
                 .about("delete_public_message <agent_to_alias> <message_index>"),
             |args, context| {
                 Box::pin(ProtestApp::delete_public_message_cmd(args, context))
+            },
+        )
+        .with_command_async(
+            Command::new("update_agent_location")
+                .arg(Arg::new("longitude").required(true))
+                .arg(Arg::new("latitude").required(false))
+                .about("update_agent_location <longitude> <latitude> or delete_public_message auto"),
+            |args, context| {
+                Box::pin(ProtestApp::update_agent_location_cmd(args, context))
+            },
+        )
+        .with_command_async(
+            Command::new("get_agent_location")
+                .about("update_agent_location"),
+            |_, context| {
+                Box::pin(ProtestApp::get_agent_location_cmd(context))
+            },
+        )
+        .with_command_async(
+            Command::new("add_to_location_database")
+                .arg(Arg::new("longitude").required(true))
+                .arg(Arg::new("latitude").required(true))
+                .arg(Arg::new("location_type").required(true))
+                .arg(Arg::new("info").required(true))
+                .about("add_to_location_database <longitude> <latitude> <location_type> <info>\n
+                location_type: Danger, Resource"),
+            |args, context| {
+                Box::pin(ProtestApp::add_to_location_database_cmd(args, context))
+            },
+        )
+        .with_command_async(
+            Command::new("remove_from_location_database")
+                .arg(Arg::new("index").required(true))
+                .about("remove_from_location_database <index>"),
+            |args, context| {
+                Box::pin(ProtestApp::remove_from_location_database_cmd(args, context))
+            },
+        )
+        .with_command_async(
+            Command::new("get_own_location_database")
+                .about("get_own_location_database <index>"),
+            |_, context| {
+                Box::pin(ProtestApp::get_own_location_database_cmd(context))
+            },
+        )
+        .with_command_async(
+            Command::new("get_location_database")
+                .arg(Arg::new("location_type").required(true))
+                .arg(Arg::new("distance_from_agent").required(false))
+                .about("get_own_location_database <location_type> <distance_from_agent (in km)>\n
+                location_type: All, Danger, Resource"),
+            |args, context| {
+                Box::pin(ProtestApp::get_location_database_cmd(args, context))
             },
         );
     repl.run_async().await
