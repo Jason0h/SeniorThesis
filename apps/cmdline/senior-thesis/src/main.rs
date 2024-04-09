@@ -17,7 +17,7 @@ use std::sync::Arc;
 // json data conversion imports
 use serde::{Deserialize, Serialize};
 // time functionality import
-use time::OffsetDateTime;
+use time::{Date, Month, OffsetDateTime, Time};
 // coordinate functionality import
 use geo::{coord, Coord};
 // miscellanious imports
@@ -53,6 +53,19 @@ use strum_macros::Display;
 
 // "location_database/{coordinator_alias}/{agent_alias}"
 // agent: write. followers + coordinator: read
+
+// "operation_proposal/{coordinator_alias}/{agent_alias}/{operation_name}"
+// agent: write. followers + coordinator: read
+
+// "operation_proposal_vote/{coordinator_alias}/{agent_alias}/{operation_name}/
+// {voting_agent_alias}"
+// agent: write. followers + coordinator: read
+
+// "committed_operations_list"
+// coordinator: write. followers: read
+
+// "operation_proposal/{coordinator_alias}/{agent_alias}/{operation_name}/committed"
+// coordinator: write. followers: read
 
 // REFERENCE: how to use debug commands for quick team creation
 
@@ -212,6 +225,21 @@ struct Location {
 enum LocationType {
     Resource,
     Danger,
+}
+
+#[derive(Serialize, Deserialize)]
+struct OperationProposal {
+    operation_name: String,
+    proposer: String,
+    start_time: OffsetDateTime,
+    end_time: OffsetDateTime,
+    info: String,
+}
+
+#[derive(Serialize, Deserialize, Display)]
+enum Vote {
+    Yes,
+    No,
 }
 
 // application instance
@@ -989,7 +1017,7 @@ impl ProtestApp {
             },
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         }
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_secs(1));
         // step 3: create agent list in memory
         let mut agent = match ProtestApp::get_agent_info(context).await {
             ErrorReturn::Object(agent) => agent,
@@ -1028,7 +1056,40 @@ impl ProtestApp {
                 )));
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // step a: create committed operations list in memory
+        let committed_operations_list: Vec<OperationProposal> = Vec::new();
+        let json_committed_operations_list =
+            serde_json::to_string(&committed_operations_list).unwrap();
+        // step b: commit commited operations list to key value store
+        let res = context.client.start_transaction();
+        if res.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Cannot Start Transaction",
+            ));
+        }
+        match context
+            .client
+            .set_data(
+                String::from("committed_operations_list"),
+                String::from("committed_operations_list"),
+                json_committed_operations_list,
+                None,
+                None,
+                false,
+            )
+            .await
+        {
+            Ok(_) => context.client.end_transaction().await,
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Committed Operations List Could Not be Created. {}",
+                    err.to_string()
+                )));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
         // step 5: promote own role to coordinator
         agent.role = Role::Coordinator;
         agent.coordinator_alias = Some(agent.alias.clone());
@@ -1131,7 +1192,7 @@ impl ProtestApp {
         // are overwritten. in the case that multiple requests are sent, agent
         // will be a ghost membor of prior teams
 
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_secs(1));
         // step 4: commit join team request to key value store
         let result = context.client.start_transaction();
         if result.is_err() {
@@ -1162,7 +1223,7 @@ impl ProtestApp {
                 )));
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_secs(1));
         // step 5.0: establish contact with coordinator
         let result = context.client.start_transaction();
         if result.is_err() {
@@ -1180,7 +1241,7 @@ impl ProtestApp {
                 )));
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_secs(1));
         // step 5: share join team request
         let result = context.client.start_transaction();
         if result.is_err() {
@@ -1259,7 +1320,7 @@ impl ProtestApp {
             },
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         }
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_secs(1));
         // note: keep track of reason (or no reason) to reject join team request
         let mut status = JoinTeamRequestStatus::Accepted;
         // step 2: retrieve agent's join team request (if it exists).
@@ -1284,7 +1345,7 @@ impl ProtestApp {
                     JoinTeamRequestStatus::Active => {}
                 }
                 // important! note: no two agents in a team can share the same alias
-                std::thread::sleep(std::time::Duration::from_secs(2));
+                std::thread::sleep(std::time::Duration::from_secs(1));
                 match ProtestApp::get_agent_list(context).await {
                     ErrorReturn::Object(agent_list) => {
                         if agent_alias == agent_list.coordinator.alias {
@@ -1320,7 +1381,7 @@ impl ProtestApp {
             }
         };
         // step 3: add agent to team (if there is no reason to reject request)
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_secs(1));
         let result = context.client.start_transaction();
         if result.is_err() {
             return ErrorReturn::Error(String::from(
@@ -1356,12 +1417,12 @@ impl ProtestApp {
         match status {
             JoinTeamRequestStatus::Accepted => {
                 // step 3.5: add accepted agent to agent list
-                std::thread::sleep(std::time::Duration::from_secs(2));
+                std::thread::sleep(std::time::Duration::from_secs(1));
                 let mut agent_list = match ProtestApp::get_agent_list(context).await {
                     ErrorReturn::Object(agent_list) => agent_list,
                     ErrorReturn::Error(err) => return ErrorReturn::Error(err),
                 };
-                std::thread::sleep(std::time::Duration::from_secs(2));
+                std::thread::sleep(std::time::Duration::from_secs(1));
                 agent_list
                     .follower_list
                     .insert(agent_alias.clone(), join_team_request.agent.clone());
@@ -1393,13 +1454,29 @@ impl ProtestApp {
                         )));
                     }
                 }
-                // step 3.6 share agent list (as a reader) with new agent
-                std::thread::sleep(std::time::Duration::from_secs(2));
+                // step 3.6: share agent list (as a reader) with new agent
+                // and share committed operations list
+                std::thread::sleep(std::time::Duration::from_secs(1));
                 let reader = join_team_request.agent.name.clone();
                 let readers = vec![&reader];
                 match context
                     .client
-                    .add_do_readers(String::from("agent_list"), readers)
+                    .add_do_readers(String::from("agent_list"), readers.clone())
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(err) => {
+                        context.client.end_transaction().await;
+                        return ErrorReturn::Error(String::from(format!(
+                            "System Error: Agent List Could Not Be Shared. {}",
+                            err
+                        )));
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                match context
+                    .client
+                    .add_do_readers(String::from("committed_operations_list"), readers)
                     .await
                 {
                     Ok(_) => {
@@ -1541,7 +1618,7 @@ impl ProtestApp {
             ErrorReturn::Object(alias) => alias,
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         };
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_secs(1));
         // step 2: check status of join team request
         let result = context.client.start_transaction();
         if result.is_err() {
@@ -1567,7 +1644,7 @@ impl ProtestApp {
                         };
                         agent.coordinator_alias =
                             Some(join_team_request.coordinator_alias);
-                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        std::thread::sleep(std::time::Duration::from_secs(1));
                         let result = context.client.start_transaction();
                         if result.is_err() {
                             return ErrorReturn::Error(String::from(
@@ -3786,21 +3863,887 @@ impl ProtestApp {
 
     // PART 6: OPERATION COMMIT FUNCTIONALITY
 
-    // command: make proposal
+    // helper: it's kinda annoying that I have to do this
+    fn number_to_month(number: u32) -> Option<Month> {
+        match number {
+            1 => Some(Month::January),
+            2 => Some(Month::February),
+            3 => Some(Month::March),
+            4 => Some(Month::April),
+            5 => Some(Month::May),
+            6 => Some(Month::June),
+            7 => Some(Month::July),
+            8 => Some(Month::August),
+            9 => Some(Month::September),
+            10 => Some(Month::October),
+            11 => Some(Month::November),
+            12 => Some(Month::December),
+            _ => None,
+        }
+    }
 
-    // not command
+    // command: set an operation proposal
+    async fn make_operation_proposal_cmd(
+        args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        // step 1: retrieve the operation name & info
+        let operation_name = args.get_one::<String>("operation_name").unwrap();
+        let info = args.get_one::<String>("info").unwrap();
+        // step 2: retrieve the operation start time
+        let start_month_arg = args.get_one::<String>("start_month").unwrap();
+        let start_month = match start_month_arg.parse::<u32>() {
+            Ok(start_month) => start_month,
+            Err(err) => {
+                return Ok(Some(String::from(format!(
+                    "Client Error: start_month Must Be A Valid Number. {}",
+                    err
+                ))))
+            }
+        };
+        let start_day_arg = args.get_one::<String>("start_day").unwrap();
+        let start_day = match start_day_arg.parse::<u8>() {
+            Ok(start_day) => start_day,
+            Err(err) => {
+                return Ok(Some(String::from(format!(
+                    "Client Error: start_day Must Be A Valid Number. {}",
+                    err
+                ))))
+            }
+        };
+        let start_year_arg = args.get_one::<String>("start_year").unwrap();
+        let start_year = match start_year_arg.parse::<i32>() {
+            Ok(start_year) => start_year,
+            Err(err) => {
+                return Ok(Some(String::from(format!(
+                    "Client Error: start_year Must Be A Valid Number. {}",
+                    err
+                ))))
+            }
+        };
+        let start_hour_arg = args.get_one::<String>("start_hour").unwrap();
+        let start_hour = match start_hour_arg.parse::<u8>() {
+            Ok(start_hour) => start_hour,
+            Err(err) => {
+                return Ok(Some(String::from(format!(
+                    "Client Error: start_hour Must Be A Valid Number. {}",
+                    err
+                ))))
+            }
+        };
+        let start_month = match ProtestApp::number_to_month(start_month) {
+            Some(start_month) => start_month,
+            None => {
+                return Ok(Some(String::from(format!(
+                    "Client Error: start_month Must Be A Valid Month",
+                ))))
+            }
+        };
+        let start_date = Date::from_calendar_date(start_year, start_month, start_day);
+        let start_date = match start_date {
+            Ok(start_date) => start_date,
+            Err(_) => {
+                return Ok(Some(String::from(format!(
+                    "Client Error: start Arguments Must Be Valid",
+                ))))
+            }
+        };
+        let start_time = Time::from_hms(start_hour, 0, 0);
+        let start_time = match start_time {
+            Ok(start_time) => start_time,
+            Err(_) => {
+                return Ok(Some(String::from(format!(
+                    "Client Error: start Arguments Must Be Valid",
+                ))))
+            }
+        };
+        let start_date = OffsetDateTime::new_utc(start_date, start_time);
+        // step 3: retrieve the operation end time
+        let end_month_arg = args.get_one::<String>("end_month").unwrap();
+        let end_month = match end_month_arg.parse::<u32>() {
+            Ok(end_month) => end_month,
+            Err(err) => {
+                return Ok(Some(String::from(format!(
+                    "Client Error: end_month Must Be A Valid Number. {}",
+                    err
+                ))))
+            }
+        };
+        let end_month = match ProtestApp::number_to_month(end_month) {
+            Some(end_month) => end_month,
+            None => {
+                return Ok(Some(String::from(format!(
+                    "Client Error: end_month Must Be A Valid Month",
+                ))))
+            }
+        };
+        let end_day_arg = args.get_one::<String>("end_day").unwrap();
+        let end_day = match end_day_arg.parse::<u8>() {
+            Ok(end_day) => end_day,
+            Err(err) => {
+                return Ok(Some(String::from(format!(
+                    "Client Error: end_day Must Be A Valid Number. {}",
+                    err
+                ))))
+            }
+        };
+        let end_year_arg = args.get_one::<String>("end_year").unwrap();
+        let end_year = match end_year_arg.parse::<i32>() {
+            Ok(end_year) => end_year,
+            Err(err) => {
+                return Ok(Some(String::from(format!(
+                    "Client Error: end_year Must Be A Valid Number. {}",
+                    err
+                ))))
+            }
+        };
+        let end_hour_arg = args.get_one::<String>("end_hour").unwrap();
+        let end_hour = match end_hour_arg.parse::<u8>() {
+            Ok(end_hour) => end_hour,
+            Err(err) => {
+                return Ok(Some(String::from(format!(
+                    "Client Error: end_hour Must Be A Valid Number. {}",
+                    err
+                ))))
+            }
+        };
+        let end_date = Date::from_calendar_date(end_year, end_month, end_day);
+        let end_date = match end_date {
+            Ok(end_date) => end_date,
+            Err(_) => {
+                return Ok(Some(String::from(format!(
+                    "Client Error: end Arguments Must Be Valid",
+                ))))
+            }
+        };
+        let end_time = Time::from_hms(end_hour, 0, 0);
+        let end_time = match end_time {
+            Ok(end_time) => end_time,
+            Err(_) => {
+                return Ok(Some(String::from(format!(
+                    "Client Error: end Arguments Must Be Valid",
+                ))))
+            }
+        };
+        let end_date = OffsetDateTime::new_utc(end_date, end_time);
+        // start of invariant check: start date <= end_date
+        if !(start_date <= end_date) {
+            return Ok(Some(String::from(format!(
+                "Client Error: end_date Must Be Monotonically Greater Than start_date",
+            ))));
+        }
+        // end of invariant check
+        match ProtestApp::make_operation_proposal(
+            operation_name,
+            start_date,
+            end_date,
+            info,
+            context,
+        )
+        .await
+        {
+            ErrorReturn::Object(_) => {
+                return Ok(Some(String::from(
+                    "Success: Operation Proposal Has Been Created",
+                )))
+            }
+            ErrorReturn::Error(err) => return Ok(Some(String::from(format!("{}", err)))),
+        }
+    }
 
-    // command vote for proposal
+    // not command: set an operation proposal
+    async fn make_operation_proposal(
+        operation_name: &String,
+        start_time: OffsetDateTime,
+        end_time: OffsetDateTime,
+        info: &String,
+        context: &mut Arc<Self>,
+    ) -> ErrorReturn<String> {
+        if !context.exists_device().await {
+            return ErrorReturn::Error(String::from(
+                "Client Error: Device Does Not Exist. Please Login First",
+            ));
+        }
+        let agent = match ProtestApp::get_agent_info(context).await {
+            ErrorReturn::Object(agent) => agent,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // check that agent has joined a team already
+        match agent.coordinator_alias {
+            Some(_) => {}
+            None => {
+                return ErrorReturn::Error(String::from(
+                    "Client Error: Agent Has Not Joined A Team Yet",
+                ));
+            }
+        }
+        // step a: set operation proposal and share with team
+        let data_id = String::from(format!(
+            "operation_proposal/{}/{}/{}",
+            agent.coordinator_alias.clone().unwrap(),
+            agent.alias.clone(),
+            operation_name.clone()
+        ));
+        let operation_proposal = OperationProposal {
+            operation_name: operation_name.clone(),
+            proposer: agent.alias.clone(),
+            start_time,
+            end_time,
+            info: info.to_string(),
+        };
+        let json_operation_proposal = serde_json::to_string(&operation_proposal).unwrap();
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        match context
+            .client
+            .set_data(
+                String::from(data_id.clone()),
+                String::from("operation_proposal"),
+                json_operation_proposal,
+                None,
+                None,
+                false,
+            )
+            .await
+        {
+            Ok(_) => {
+                context.client.end_transaction().await;
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Operation Proposal Could Not Be Updated. {}",
+                    err.to_string()
+                )));
+            }
+        }
+        match ProtestApp::share_to_team_as_readers(data_id, context).await {
+            ErrorReturn::Object(_) => return ErrorReturn::Object(String::from("")),
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        }
+    }
 
-    // not command
+    // command: vote for an agent's proposal
+    async fn vote_for_operation_proposal_cmd(
+        args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        let operation_name = args.get_one::<String>("operation_name").unwrap();
+        let agent_alias = args.get_one::<String>("agent_alias").unwrap();
+        let vote = args.get_one::<String>("vote").unwrap();
+        let vote_enum: Option<Vote>;
+        if vote == "Yes" {
+            vote_enum = Some(Vote::Yes);
+        } else if vote == "No" {
+            vote_enum = Some(Vote::No);
+        } else if vote == "N/A" {
+            vote_enum = None;
+        } else {
+            return Ok(Some(String::from(
+                "Client Error: Vote Must Be Yes, No, N/A",
+            )));
+        }
+        match ProtestApp::vote_for_operation_proposal(
+            operation_name,
+            agent_alias,
+            vote_enum,
+            context,
+        )
+        .await
+        {
+            ErrorReturn::Object(_) => {
+                return Ok(Some(String::from(
+                    "Success: Operation Proposal Vote Has Been Cast",
+                )))
+            }
+            ErrorReturn::Error(err) => return Ok(Some(String::from(format!("{}", err)))),
+        }
+    }
 
-    // command see vote status
+    // not command: vote for an agent's proposal
+    async fn vote_for_operation_proposal(
+        operation_name: &String,
+        agent_alias: &String,
+        vote: Option<Vote>,
+        context: &mut Arc<Self>,
+    ) -> ErrorReturn<String> {
+        if !context.exists_device().await {
+            return ErrorReturn::Error(String::from(
+                "Client Error: Device Does Not Exist. Please Login First",
+            ));
+        }
+        let agent = match ProtestApp::get_agent_info(context).await {
+            ErrorReturn::Object(agent) => agent,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        // check that agent has joined a team already
+        match agent.coordinator_alias {
+            Some(_) => {}
+            None => {
+                return ErrorReturn::Error(String::from(
+                    "Client Error: Agent Has Not Joined A Team Yet",
+                ));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // step a: set operation proposal and share with team
+        let data_id = String::from(format!(
+            "operation_proposal_vote/{}/{}/{}/{}",
+            agent.coordinator_alias.clone().unwrap(),
+            agent_alias.clone(),
+            operation_name.clone(),
+            agent.alias.clone()
+        ));
+        let json_operation_proposal_vote = serde_json::to_string(&vote).unwrap();
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        match context
+            .client
+            .set_data(
+                String::from(data_id.clone()),
+                String::from("operation_proposal_vote"),
+                json_operation_proposal_vote,
+                None,
+                None,
+                false,
+            )
+            .await
+        {
+            Ok(_) => {
+                context.client.end_transaction().await;
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Operation Proposal Vote Could Not Be Cast. {}",
+                    err.to_string()
+                )));
+            }
+        }
+        match ProtestApp::share_to_team_as_readers(data_id, context).await {
+            ErrorReturn::Object(_) => return ErrorReturn::Object(String::from("")),
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        }
+    }
 
-    // not command
+    // helper: compose vote status information into a string
+    fn operation_proposal_status_to_string(
+        operation_proposal: OperationProposal,
+        agent_votes: HashMap<String, Option<Vote>>,
+        committed: bool,
+    ) -> String {
+        let mut status_string = String::from("");
+        // step 1: include operation proposal information
+        status_string.push_str(&String::from(format!("committed: {}\n\n", committed)));
+        status_string.push_str(&String::from(format!(
+            "operation_name: {}\nproposer: {}\nstart_time: {}\nend_time: {}\ninfo: {}\n\n",
+            &operation_proposal.operation_name,
+            &operation_proposal.proposer,
+            ProtestApp::format_offset_date_time(operation_proposal.start_time),
+            ProtestApp::format_offset_date_time(operation_proposal.end_time),
+            &operation_proposal.info
+        )));
+        // step 2: include individual agent vote information
+        let mut num_agent: u32 = 0;
+        let mut num_yes: u32 = 0;
+        let mut num_no: u32 = 0;
+        let mut num_na: u32 = 0;
+        let mut vote_string: String;
+        for (agent_alias, vote) in agent_votes {
+            match vote {
+                Some(vote) => match vote {
+                    Vote::Yes => {
+                        num_yes += 1;
+                        vote_string = String::from("Yes");
+                    }
+                    Vote::No => {
+                        num_no += 1;
+                        vote_string = String::from("No");
+                    }
+                },
+                None => {
+                    num_na += 1;
+                    vote_string = String::from("N/A");
+                }
+            }
+            num_agent += 1;
+            status_string
+                .push_str(&String::from(format!("{}: {}\n", agent_alias, vote_string)))
+        }
+        status_string.push_str(&String::from("\n"));
+        // step 3: include accumulated agent vote information
+        status_string.push_str(&String::from(format!(
+            "num_agents: {}\nnum_yes: {}\nnum_no: {}\nnum_n/a {}",
+            num_agent, num_yes, num_no, num_na,
+        )));
+        return status_string;
+    }
 
-    // command commit proposal
+    // command: see the vote status of an agent's proposal
+    async fn operation_proposal_status_cmd(
+        args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        let operation_name = args.get_one::<String>("operation_name").unwrap();
+        let agent_alias = args.get_one::<String>("agent_alias").unwrap();
+        match ProtestApp::operation_proposal_status(operation_name, agent_alias, context)
+            .await
+        {
+            ErrorReturn::Object(status) => {
+                return Ok(Some(String::from(format!("{}", status))))
+            }
+            ErrorReturn::Error(err) => return Ok(Some(String::from(format!("{}", err)))),
+        }
+    }
 
-    // not command
+    // not command: see the vote status of an agent's proposal
+    async fn operation_proposal_status(
+        operation_name: &String,
+        agent_alias: &String,
+        context: &mut Arc<Self>,
+    ) -> ErrorReturn<String> {
+        if !context.exists_device().await {
+            return ErrorReturn::Error(String::from(
+                "Client Error: Device Does Not Exist. Please Login First",
+            ));
+        }
+        let agent = match ProtestApp::get_agent_info(context).await {
+            ErrorReturn::Object(agent) => agent,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // check that agent has joined a team already
+        match agent.coordinator_alias {
+            Some(_) => {}
+            None => {
+                return ErrorReturn::Error(String::from(
+                    "Client Error: Agent Has Not Joined A Team Yet",
+                ));
+            }
+        }
+        // step 1: retrieve operation proposal
+        let operation_proposal: OperationProposal;
+        let data_id = String::from(format!(
+            "operation_proposal/{}/{}/{}",
+            agent.coordinator_alias.clone().unwrap(),
+            agent_alias.clone(),
+            operation_name.clone()
+        ));
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        match context.client.get_data(&data_id.clone()).await {
+            Ok(Some(operation_proposal_object)) => {
+                context.client.end_transaction().await;
+                operation_proposal =
+                    serde_json::from_str(operation_proposal_object.data_val()).unwrap();
+            }
+            Ok(None) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(
+                    "Client Error: Queried Operation Proposal Does Not Exist",
+                ));
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Operation Proposal Could Not Be Retrieved. {}",
+                    err
+                )));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // step 2: compile hash table of agent votes for proposal
+        let mut agent_list = match ProtestApp::get_agent_list(context).await {
+            ErrorReturn::Object(agent_list) => agent_list,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        agent_list.follower_list.insert(
+            agent_list.coordinator.alias.clone(),
+            agent_list.coordinator.clone(),
+        );
+        let mut agent_votes: HashMap<String, Option<Vote>> = HashMap::new();
+        for (agent_alias_l, _) in agent_list.follower_list {
+            let operation_proposal_vote: Option<Vote>;
+            let data_id = String::from(format!(
+                "operation_proposal_vote/{}/{}/{}/{}",
+                agent.coordinator_alias.clone().unwrap(),
+                agent_alias.clone(),
+                operation_name.clone(),
+                agent_alias_l.clone()
+            ));
+            let result = context.client.start_transaction();
+            if result.is_err() {
+                return ErrorReturn::Error(String::from(
+                    "System Error: Unable To Start Transaction",
+                ));
+            }
+            match context.client.get_data(&data_id.clone()).await {
+                Ok(Some(operation_proposal_vote_object)) => {
+                    context.client.end_transaction().await;
+                    operation_proposal_vote =
+                        serde_json::from_str(operation_proposal_vote_object.data_val())
+                            .unwrap();
+                }
+                Ok(None) => {
+                    context.client.end_transaction().await;
+                    operation_proposal_vote = None;
+                }
+                Err(err) => {
+                    context.client.end_transaction().await;
+                    return ErrorReturn::Error(String::from(format!(
+                        "System Error: Operation Proposal Vote Could Not Be Retrieved. {}",
+                        err
+                    )));
+                }
+            }
+            agent_votes.insert(agent_alias_l, operation_proposal_vote);
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        // step 3: get committed flag
+        let data_id = String::from(format!(
+            "operation_proposal/{}/{}/{}/committed",
+            agent.coordinator_alias.clone().unwrap(),
+            agent_alias.clone(),
+            operation_name.clone()
+        ));
+        let mut committed = false;
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        match context.client.get_data(&data_id.clone()).await {
+            Ok(Some(_)) => {
+                context.client.end_transaction().await;
+                committed = true;
+            }
+            Ok(None) => {
+                context.client.end_transaction().await;
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Committed Flag Could Not Be Retrieved. {}",
+                    err
+                )));
+            }
+        }
+        return ErrorReturn::Object(String::from(format!(
+            "{}",
+            ProtestApp::operation_proposal_status_to_string(
+                operation_proposal,
+                agent_votes,
+                committed
+            )
+        )));
+    }
+
+    // command: commit operation proposal
+    async fn commit_operation_proposal_cmd(
+        args: ArgMatches,
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        let operation_name = args.get_one::<String>("operation_name").unwrap();
+        let agent_alias = args.get_one::<String>("agent_alias").unwrap();
+        match ProtestApp::commit_operation_proposal(operation_name, agent_alias, context)
+            .await
+        {
+            ErrorReturn::Object(_) => {
+                return Ok(Some(String::from(
+                    "Success: Operation Proposal Has Been Committed",
+                )))
+            }
+            ErrorReturn::Error(err) => return Ok(Some(String::from(format!("{}", err)))),
+        }
+    }
+
+    // not command: commit operation proposal
+    async fn commit_operation_proposal(
+        operation_name: &String,
+        agent_alias: &String,
+        context: &mut Arc<Self>,
+    ) -> ErrorReturn<String> {
+        // step 0: housekeeping tasks
+        if !context.exists_device().await {
+            return ErrorReturn::Error(String::from(
+                "Client Error: Device Does Not Exist. Please Login First",
+            ));
+        }
+        let agent = match ProtestApp::get_agent_info(context).await {
+            ErrorReturn::Object(agent) => agent,
+            ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+        };
+        match agent.role {
+            Role::Coordinator => {}
+            Role::Follower => {
+                return ErrorReturn::Error(String::from(
+                    "Client Error: This Is a Coordinator Only Operation",
+                ))
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // step 1: get committed operations list
+        let mut committed_operations_list: Vec<OperationProposal>;
+        let data_id = String::from("committed_operations_list");
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        match context.client.get_data(&data_id.clone()).await {
+            Ok(Some(committed_operations_list_object)) => {
+                context.client.end_transaction().await;
+                committed_operations_list =
+                    serde_json::from_str(committed_operations_list_object.data_val())
+                        .unwrap();
+            }
+            Ok(None) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(
+                    "Client Error: Committed Operations List Does Not Exist",
+                ));
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Committed Operations List Could Not Be Retrieved. {}",
+                    err
+                )));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // step 1.5: get operation to commit
+        let operation_proposal: OperationProposal;
+        let data_id = String::from(format!(
+            "operation_proposal/{}/{}/{}",
+            agent.coordinator_alias.clone().unwrap(),
+            agent_alias.clone(),
+            operation_name.clone()
+        ));
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        match context.client.get_data(&data_id.clone()).await {
+            Ok(Some(operation_proposal_object)) => {
+                context.client.end_transaction().await;
+                operation_proposal =
+                    serde_json::from_str(operation_proposal_object.data_val()).unwrap();
+            }
+            Ok(None) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(
+                    "Client Error: Queried Operation Proposal Does Not Exist",
+                ));
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Operation Proposal Could Not Be Retrieved. {}",
+                    err
+                )));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        if !(operation_proposal.start_time <= operation_proposal.end_time) {
+            return ErrorReturn::Error(String::from(
+                "Client Error: end_date Must Be Monotonically Greater Than start_date",
+            ));
+        }
+        // step 2: insert operation if possible
+        let mut insertion_found = false;
+        let mut break_point = 0;
+        if committed_operations_list.len() == 0 {
+            insertion_found = true;
+        } else {
+            for i in 0..=committed_operations_list.len() {
+                if i == 0 {
+                    if operation_proposal.end_time
+                        <= committed_operations_list[i].start_time
+                    {
+                        break_point = i;
+                        insertion_found = true;
+                        break;
+                    }
+                } else if i == committed_operations_list.len() {
+                    if operation_proposal.start_time
+                        >= committed_operations_list[i - 1].end_time
+                    {
+                        break_point = i;
+                        insertion_found = true;
+                        break;
+                    }
+                } else {
+                    if operation_proposal.start_time
+                        >= committed_operations_list[i - 1].end_time
+                        && operation_proposal.end_time
+                            <= committed_operations_list[i].start_time
+                    {
+                        break_point = i;
+                        insertion_found = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if insertion_found {
+            committed_operations_list.insert(break_point, operation_proposal);
+        } else {
+            return ErrorReturn::Error(String::from("Client Error: Operation Proposal's Start And End Times Are Incompatible With Already Committed Operations"));
+        }
+        // step 3: commit new operations list to key value store
+        let json_committed_operations_list =
+            serde_json::to_string(&committed_operations_list).unwrap();
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        match context
+            .client
+            .set_data(
+                String::from("committed_operations_list"),
+                String::from("committed_operations_list"),
+                json_committed_operations_list,
+                None,
+                None,
+                false,
+            )
+            .await
+        {
+            Ok(_) => {
+                context.client.end_transaction().await;
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Committed Operations List Could Not Be Updated. {}",
+                    err.to_string()
+                )));
+            }
+        }
+        // step 4: add committed flag to key value store
+        let committed = true;
+        let json_committed = serde_json::to_string(&committed).unwrap();
+        let data_id = String::from(format!(
+            "operation_proposal/{}/{}/{}/committed",
+            agent.coordinator_alias.clone().unwrap(),
+            agent_alias.clone(),
+            operation_name.clone()
+        ));
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        match context
+            .client
+            .set_data(
+                data_id,
+                String::from("committed_operation/committed"),
+                json_committed,
+                None,
+                None,
+                false,
+            )
+            .await
+        {
+            Ok(_) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Object(String::from(""));
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Committed Flag Could Not Be Added. {}",
+                    err.to_string()
+                )));
+            }
+        }
+    }
+
+    // command: get committed operation proposals list
+    async fn get_committed_operations_cmd(
+        context: &mut Arc<Self>,
+    ) -> ReplResult<Option<String>> {
+        match ProtestApp::get_committed_operations(context).await {
+            ErrorReturn::Object(committed_operations) => {
+                return Ok(Some(String::from(format!("{}", committed_operations))))
+            }
+            ErrorReturn::Error(err) => return Ok(Some(String::from(format!("{}", err)))),
+        }
+    }
+
+    // not command: get committed operation proposals list
+    async fn get_committed_operations(context: &mut Arc<Self>) -> ErrorReturn<String> {
+        let committed_operations_list: Vec<OperationProposal>;
+        let data_id = String::from("committed_operations_list");
+        let result = context.client.start_transaction();
+        if result.is_err() {
+            return ErrorReturn::Error(String::from(
+                "System Error: Unable To Start Transaction",
+            ));
+        }
+        match context.client.get_data(&data_id.clone()).await {
+            Ok(Some(committed_operations_list_object)) => {
+                context.client.end_transaction().await;
+                committed_operations_list =
+                    serde_json::from_str(committed_operations_list_object.data_val())
+                        .unwrap();
+            }
+            Ok(None) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(
+                    "Client Error: Committed Operations List Does Not Exist",
+                ));
+            }
+            Err(err) => {
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(format!(
+                    "System Error: Committed Operations List Could Not Be Retrieved. {}",
+                    err
+                )));
+            }
+        };
+        // format committed operations list into a string
+        let mut committed_operations_str = String::from("");
+        for operation in committed_operations_list {
+            committed_operations_str.push_str(&String::from(format!(
+                "operation_name: {}\nproposer: {}\nstart_time: {}\nend_time: {}\ninfo: {}\n\n",
+                &operation.operation_name,
+                &operation.proposer,
+                ProtestApp::format_offset_date_time(operation.start_time),
+                ProtestApp::format_offset_date_time(operation.end_time),
+                &operation.info
+            )));
+        }
+        if committed_operations_str.len() >= 2 {
+            committed_operations_str.truncate(committed_operations_str.len() - 2);
+        }
+        return ErrorReturn::Object(committed_operations_str);
+    }
 }
 
 // spin up client application & command line interface
@@ -4033,6 +4976,59 @@ async fn main() -> ReplResult<()> {
                 location_type: All, Danger, Resource"),
             |args, context| {
                 Box::pin(ProtestApp::get_location_database_cmd(args, context))
+            },
+        )
+        .with_command_async(
+            Command::new("make_operation_proposal")
+                .arg(Arg::new("operation_name").required(true))
+                .arg(Arg::new("start_month").required(true))
+                .arg(Arg::new("start_day").required(true))
+                .arg(Arg::new("start_year").required(true))
+                .arg(Arg::new("start_hour").required(true))
+                .arg(Arg::new("end_month").required(true))
+                .arg(Arg::new("end_day").required(true))
+                .arg(Arg::new("end_year").required(true))
+                .arg(Arg::new("end_hour").required(true))
+                .arg(Arg::new("info").required(true))
+                .about("make_operation_proposal <operation_name> <start_month> <start_day> <start_year> <start_hour>
+                <end_month> <end_day> <end year> <end_hour> <info>"),
+            |args, context| {
+                Box::pin(ProtestApp::make_operation_proposal_cmd(args, context))
+            },
+        )
+        .with_command_async(
+            Command::new("vote_for_operation_proposal")
+                .arg(Arg::new("agent_alias").required(true))
+                .arg(Arg::new("operation_name").required(true))
+                .arg(Arg::new("vote").required(true))
+                .about("vote_for_operation_proposal <agent_alias> <operation_name> <vote: Yes, No, N/A>"),
+            |args, context| {
+                Box::pin(ProtestApp::vote_for_operation_proposal_cmd(args, context))
+            },
+        )
+        .with_command_async(
+            Command::new("operation_proposal_status")
+                .arg(Arg::new("agent_alias").required(true))
+                .arg(Arg::new("operation_name").required(true))
+                .about("operation_proposal_status <agent_alias> <operation_name>"),
+            |args, context| {
+                Box::pin(ProtestApp::operation_proposal_status_cmd(args, context))
+            },
+        )
+        .with_command_async(
+            Command::new("commit_operation_proposal")
+                .arg(Arg::new("agent_alias").required(true))
+                .arg(Arg::new("operation_name").required(true))
+                .about("commit_operation_proposal <agent_alias> <operation_name>"),
+            |args, context| {
+                Box::pin(ProtestApp::commit_operation_proposal_cmd(args, context))
+            },
+        )
+        .with_command_async(
+            Command::new("get_committed_operations")
+                .about("get_committed_operations"),
+            |_, context| {
+                Box::pin(ProtestApp::get_committed_operations_cmd(context))
             },
         );
     repl.run_async().await
