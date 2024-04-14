@@ -216,8 +216,9 @@ enum AgentLocation {
 
 #[derive(Serialize, Deserialize)]
 struct Location {
+    name: String,
     point: Coord<f64>,
-    location_type: LocationType,
+    location_type: String,
     info: String,
 }
 
@@ -234,6 +235,7 @@ struct OperationProposal {
     start_time: OffsetDateTime,
     end_time: OffsetDateTime,
     info: String,
+    point: Option<Coord<f64>>,
 }
 
 #[derive(Serialize, Deserialize, Display)]
@@ -3139,22 +3141,14 @@ impl ProtestApp {
         let point = coord! {x: x_location, y: y_location};
         // step 2: extract the location type
         let location_type = args.get_one::<String>("location_type").unwrap().to_string();
-        let location_type_enum: LocationType;
-        if location_type == String::from("Resource") {
-            location_type_enum = LocationType::Resource
-        } else if location_type == String::from("Danger") {
-            location_type_enum = LocationType::Danger
-        } else {
-            return Ok(Some(String::from(format!(
-                "Client Error: location_type Must Be Valid",
-            ))));
-        }
-        // step 3: extract the location information
+        // step 3: extract the name and location information
         let info = args.get_one::<String>("info").unwrap().to_string();
+        let name = args.get_one::<String>("name").unwrap().to_string();
         // step 4: call the update function
         match ProtestApp::add_to_location_database(
+            name,
             point,
-            location_type_enum,
+            location_type,
             info,
             context,
         )
@@ -3171,8 +3165,9 @@ impl ProtestApp {
 
     // not command: add location to personal database & share with team
     async fn add_to_location_database(
+        name: String,
         point: Coord,
-        location_type: LocationType,
+        location_type: String,
         info: String,
         context: &mut Arc<Self>,
     ) -> ErrorReturn<String> {
@@ -3182,6 +3177,7 @@ impl ProtestApp {
         };
         // std::thread::sleep(std::time::Duration::from_secs(1));
         let location = Location {
+            name,
             point,
             location_type,
             info,
@@ -3332,7 +3328,10 @@ impl ProtestApp {
                 "{}: {}: longitude: {}, latitude: {}\n",
                 index, location.location_type, location.point.x, location.point.y
             )));
-            formatted_database.push_str(&String::from(format!("{}\n\n", location.info)));
+            formatted_database.push_str(&String::from(format!(
+                "{}: {}\n\n",
+                location.name, location.info
+            )));
             index += 1;
         }
         if formatted_database.len() >= 2 {
@@ -3403,8 +3402,10 @@ impl ProtestApp {
                     "{}: longitude: {}, latitude: {}\n",
                     location.location_type, location.point.x, location.point.y
                 )));
-                formatted_database
-                    .push_str(&String::from(format!("{}\n\n", location.info)));
+                formatted_database.push_str(&String::from(format!(
+                    "{}: {}\n\n",
+                    location.name, location.info
+                )));
             }
             formatted_databases.push_str(&formatted_database);
         }
@@ -3433,7 +3434,7 @@ impl ProtestApp {
     // helper: filter location database (location type and distance from)
     async fn filter_location_database(
         mut location_database: Vec<Location>,
-        location_type: Option<LocationType>,
+        location_type: Option<String>,
         distance_from_agent: Option<f64>,
         context: &mut Arc<Self>,
     ) -> ErrorReturn<Vec<Location>> {
@@ -3473,18 +3474,12 @@ impl ProtestApp {
         args: ArgMatches,
         context: &mut Arc<Self>,
     ) -> ReplResult<Option<String>> {
-        let location_type: Option<LocationType>;
+        let location_type: Option<String>;
         let location_type_arg = args.get_one::<String>("location_type").unwrap();
         if location_type_arg == "All" {
             location_type = None;
-        } else if location_type_arg == "Danger" {
-            location_type = Some(LocationType::Danger);
-        } else if location_type_arg == "Resource" {
-            location_type = Some(LocationType::Resource);
         } else {
-            return Ok(Some(String::from(
-                "Client Error: Location Type Is Not Valid",
-            )));
+            location_type = Some(location_type_arg.to_string());
         }
         let distance_from_agent: Option<f64>;
         let distance_from_agent_arg = args.get_one::<String>("distance_from_agent");
@@ -3521,7 +3516,7 @@ impl ProtestApp {
 
     // not command: get locations from database (with location type and distance filters)
     async fn get_location_database_real(
-        location_type: Option<LocationType>,
+        location_type: Option<String>,
         distance_from_agent: Option<f64>,
         context: &mut Arc<Self>,
     ) -> ErrorReturn<String> {
@@ -3749,12 +3744,57 @@ impl ProtestApp {
                 "Client Error: end_date Must Be Monotonically Greater Than start_date",
             ))));
         }
-        // end of invariant check
+        // step 4: add location to operation proposal
+        let mut x_location_exists = false;
+        let mut y_location_exists = false;
+        let x_location_wrapped = args.get_one::<String>("longitude");
+        let y_location_wrapped = args.get_one::<String>("latitude");
+        let mut x_location_l = String::from("");
+        let mut y_location_l = String::from("");
+        match x_location_wrapped {
+            Some(value) => {
+                x_location_l = value.to_string();
+                x_location_exists = true;
+            }
+            None => {}
+        }
+        match y_location_wrapped {
+            Some(value) => {
+                y_location_l = value.to_string();
+                y_location_exists = true;
+            }
+            None => {}
+        }
+        let mut point = None;
+        if x_location_exists && y_location_exists {
+            let x_location = x_location_l.parse::<f64>();
+            let x_location = match x_location {
+                Ok(x_location) => x_location,
+                Err(err) => {
+                    return Ok(Some(String::from(format!(
+                        "Client Error: longitude Must Be A Floating Point Number. {}",
+                        err
+                    ))))
+                }
+            };
+            let y_location = y_location_l.parse::<f64>();
+            let y_location = match y_location {
+                Ok(y_location) => y_location,
+                Err(err) => {
+                    return Ok(Some(String::from(format!(
+                        "Client Error: latitude Must Be A Floating Point Number. {}",
+                        err
+                    ))))
+                }
+            };
+            point = Some(coord! {x: x_location, y: y_location});
+        }
         match ProtestApp::make_operation_proposal(
             operation_name,
             start_date,
             end_date,
             info,
+            point,
             context,
         )
         .await
@@ -3774,6 +3814,7 @@ impl ProtestApp {
         start_time: OffsetDateTime,
         end_time: OffsetDateTime,
         info: &String,
+        point: Option<Coord<f64>>,
         context: &mut Arc<Self>,
     ) -> ErrorReturn<String> {
         if !context.exists_device().await {
@@ -3808,6 +3849,7 @@ impl ProtestApp {
             start_time,
             end_time,
             info: info.to_string(),
+            point,
         };
         let json_operation_proposal = serde_json::to_string(&operation_proposal).unwrap();
         let result = context.client.start_transaction();
@@ -3962,11 +4004,23 @@ impl ProtestApp {
     ) -> String {
         let mut status_string = String::from("");
         // step 1: include operation proposal information
+        let mut longitude_str = String::from("N/A");
+        match operation_proposal.point {
+            Some(point) => longitude_str = point.x.to_string(),
+            None => {}
+        }
+        let mut latitude_str = String::from("N/A");
+        match operation_proposal.point {
+            Some(point) => latitude_str = point.y.to_string(),
+            None => {}
+        }
         status_string.push_str(&String::from(format!("committed: {}\n\n", committed)));
         status_string.push_str(&String::from(format!(
-            "operation_name: {}\nproposer: {}\nstart_time: {}\nend_time: {}\ninfo: {}\n\n",
+            "operation_name: {}\nproposer: {}\nlongitude: {}\nlatitude: {}\nstart_time: {}\nend_time: {}\ninfo: {}\n\n",
             &operation_proposal.operation_name,
             &operation_proposal.proposer,
+            longitude_str,
+            latitude_str,
             ProtestApp::format_offset_date_time(operation_proposal.start_time),
             ProtestApp::format_offset_date_time(operation_proposal.end_time),
             &operation_proposal.info
@@ -4384,10 +4438,22 @@ impl ProtestApp {
         // format committed operations list into a string
         let mut committed_operations_str = String::from("");
         for operation in committed_operations_list {
+            let mut longitude_str = String::from("N/A");
+            match operation.point {
+                Some(point) => longitude_str = point.x.to_string(),
+                None => {}
+            }
+            let mut latitude_str = String::from("N/A");
+            match operation.point {
+                Some(point) => latitude_str = point.y.to_string(),
+                None => {}
+            }
             committed_operations_str.push_str(&String::from(format!(
-                "operation_name: {}\nproposer: {}\nstart_time: {}\nend_time: {}\ninfo: {}\n\n",
+                "operation_name: {}\nproposer: {}\nlongitude: {}\nlatitude: {}\nstart_time: {}\nend_time: {}\ninfo: {}\n\n",
                 &operation.operation_name,
                 &operation.proposer,
+                longitude_str,
+                latitude_str,
                 ProtestApp::format_offset_date_time(operation.start_time),
                 ProtestApp::format_offset_date_time(operation.end_time),
                 &operation.info
@@ -4596,12 +4662,12 @@ async fn main() -> ReplResult<()> {
         )
         .with_command_async(
             Command::new("add_to_location_database")
+                .arg(Arg::new("name").required(true))
                 .arg(Arg::new("longitude").required(true))
                 .arg(Arg::new("latitude").required(true))
                 .arg(Arg::new("location_type").required(true))
                 .arg(Arg::new("info").required(true))
-                .about("add_to_location_database <longitude> <latitude> <location_type> <info>\n
-                location_type: Danger, Resource"),
+                .about("add_to_location_database <name> <longitude> <latitude> <location_type> <info>"),
             |args, context| {
                 Box::pin(ProtestApp::add_to_location_database_cmd(args, context))
             },
@@ -4643,8 +4709,10 @@ async fn main() -> ReplResult<()> {
                 .arg(Arg::new("end_year").required(true))
                 .arg(Arg::new("end_hour").required(true))
                 .arg(Arg::new("info").required(true))
+                .arg(Arg::new("longitude").required(false))
+                .arg(Arg::new("latitude").required(false))
                 .about("make_operation_proposal <operation_name> <start_month> <start_day> <start_year> <start_hour>
-                <end_month> <end_day> <end year> <end_hour> <info>"),
+                <end_month> <end_day> <end year> <end_hour> <info> <longitude> <latitude>"),
             |args, context| {
                 Box::pin(ProtestApp::make_operation_proposal_cmd(args, context))
             },
