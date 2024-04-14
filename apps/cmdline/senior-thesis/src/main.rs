@@ -268,7 +268,7 @@ impl ProtestApp {
         let _ = ProtestApp::signup_agent(String::from("Trent"), context).await;
         std::thread::sleep(std::time::Duration::from_secs(2));
         ProtestApp::create_team(context).await;
-        std::thread::sleep(std::time::Duration::from_secs(3));
+        std::thread::sleep(std::time::Duration::from_secs(2));
         let agent = match ProtestApp::get_agent_info(context).await {
             ErrorReturn::Object(agent) => agent,
             ErrorReturn::Error(_) => Agent {
@@ -353,15 +353,8 @@ impl ProtestApp {
 
     // not command: for debug purposes: dump all data associated with agent
     async fn dump_data(context: &mut Arc<Self>) -> ErrorReturn<String> {
-        // step 1: start transaction & check that device exists
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
+        // step 1: check that device exists
         if !context.exists_device().await {
-            context.client.end_transaction().await;
             return ErrorReturn::Error(String::from(
                 "Client Error: Device Does Not Exist. Please Login First",
             ));
@@ -369,13 +362,11 @@ impl ProtestApp {
         // step 2: get and return all data associated with client
         match context.client.get_all_data().await {
             Ok(data) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Object(itertools::join(data, "\n"));
             }
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
-                    "System Error: Device Could Not Be Created. {}",
+                    "System Error: Data Could Not Be Retrieved. {}",
                     err.to_string()
                 )));
             }
@@ -432,7 +423,6 @@ impl ProtestApp {
         };
         let json_private_messages_info =
             serde_json::to_string(&private_messages_info).unwrap();
-
         // step b: commit private messages info data to key value store
         match context
             .client
@@ -540,16 +530,8 @@ impl ProtestApp {
         id: String,
         context: &mut Arc<Self>,
     ) -> ReplResult<Option<String>> {
-        // step 1: start transaction
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return Ok(Some(String::from(
-                "System Error: Unable To Start Transaction",
-            )));
-        }
         // step 1.1: prevent agent from logging in again if already logged in
         if context.exists_device().await {
-            context.client.end_transaction().await;
             return Ok(Some(String::from(
                 "Client Error: Client Is Already Logged In, Cannot Log In Again",
             )));
@@ -557,8 +539,7 @@ impl ProtestApp {
         // step 2: link client device
         match context.client.create_linked_device(id).await {
             Ok(_) => {
-                context.client.end_transaction().await;
-                std::thread::sleep(std::time::Duration::from_secs(3));
+                std::thread::sleep(std::time::Duration::from_secs(1));
                 let agent_alias = match ProtestApp::get_agent_alias(context).await {
                     ErrorReturn::Object(agent_alias) => agent_alias,
                     ErrorReturn::Error(err) => {
@@ -574,7 +555,6 @@ impl ProtestApp {
                 ))));
             }
             Err(err) => {
-                context.client.end_transaction().await;
                 return Ok(Some(String::from(format!(
                     "System Error: Device Could Not Be Created. {}",
                     err.to_string()
@@ -610,15 +590,8 @@ impl ProtestApp {
 
     // not command: return client's identity: i.e. id, alias, role
     async fn get_agent_info(context: &mut Arc<Self>) -> ErrorReturn<Agent> {
-        // step 1: start transaction & check that device exists
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
+        // step 1: check that device exists
         if !context.exists_device().await {
-            context.client.end_transaction().await;
             return ErrorReturn::Error(String::from(
                 "Client Error: Device Does Not Exist. Please Login First",
             ));
@@ -626,18 +599,15 @@ impl ProtestApp {
         // step 2: get & return client data from key value store
         match context.client.get_data(&String::from("agent")).await {
             Ok(Some(agent_obj)) => {
-                context.client.end_transaction().await;
                 let agent: Agent = serde_json::from_str(agent_obj.data_val()).unwrap();
                 return ErrorReturn::Object(agent);
             }
             Ok(None) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(
                     "System Error: Agent Data Does Not Exist",
                 ));
             }
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Agent Data Could Not Be Retrieved. {}",
                     err
@@ -761,22 +731,13 @@ impl ProtestApp {
 
     // command: return client id
     async fn get_agent_id_cmd(context: &mut Arc<Self>) -> ReplResult<Option<String>> {
-        // step 1: start transaction & check that device exists
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            context.client.end_transaction().await;
-            return Ok(Some(String::from(
-                "System Error: Unable To Start Transaction",
-            )));
-        }
+        // step 1: check that device exists
         if !context.exists_device().await {
-            context.client.end_transaction().await;
             return Ok(Some(String::from(
                 "Client Error: Device Does Not Exist. Please Login First",
             )));
         }
         // step 2: return client id
-        context.client.end_transaction().await;
         Ok(Some(String::from(format!(
             "Success: Your Id Is: {}",
             context.client.idkey()
@@ -948,15 +909,8 @@ impl ProtestApp {
 
     // not command: retrieve agent list (must be coordinator or have joined a team)
     async fn get_agent_list(context: &mut Arc<Self>) -> ErrorReturn<AgentList> {
-        // step 1: start transaction & check that device exists
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
+        // step 1: check that device exists
         if !context.exists_device().await {
-            context.client.end_transaction().await;
             return ErrorReturn::Error(String::from(
                 "Client Error: Device Does Not Exist. Please Login First",
             ));
@@ -964,19 +918,16 @@ impl ProtestApp {
         // step 2: get & return agent list from key value store
         match context.client.get_data(&String::from("agent_list")).await {
             Ok(Some(agent_list_obj)) => {
-                context.client.end_transaction().await;
                 let agent_list: AgentList =
                     serde_json::from_str(agent_list_obj.data_val()).unwrap();
                 return ErrorReturn::Object(agent_list);
             }
             Ok(None) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(
                     "Client Error: Agent List Does Not Exist. Create Team Or Join Team First",
                 ));
             }
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Agent List Could Not Be Retrieved. {}",
                     err
@@ -1017,7 +968,7 @@ impl ProtestApp {
             },
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // step 3: create agent list in memory
         let mut agent = match ProtestApp::get_agent_info(context).await {
             ErrorReturn::Object(agent) => agent,
@@ -1047,7 +998,7 @@ impl ProtestApp {
             )
             .await
         {
-            Ok(_) => context.client.end_transaction().await,
+            Ok(_) => {}
             Err(err) => {
                 context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
@@ -1056,18 +1007,12 @@ impl ProtestApp {
                 )));
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // step a: create committed operations list in memory
         let committed_operations_list: Vec<OperationProposal> = Vec::new();
         let json_committed_operations_list =
             serde_json::to_string(&committed_operations_list).unwrap();
         // step b: commit commited operations list to key value store
-        let res = context.client.start_transaction();
-        if res.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Cannot Start Transaction",
-            ));
-        }
         match context
             .client
             .set_data(
@@ -1080,7 +1025,7 @@ impl ProtestApp {
             )
             .await
         {
-            Ok(_) => context.client.end_transaction().await,
+            Ok(_) => {}
             Err(err) => {
                 context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
@@ -1089,17 +1034,11 @@ impl ProtestApp {
                 )));
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // step 5: promote own role to coordinator
         agent.role = Role::Coordinator;
         agent.coordinator_alias = Some(agent.alias.clone());
         let json_agent = serde_json::to_string(&agent).unwrap();
-        let res = context.client.start_transaction();
-        if res.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Cannot Start Transaction",
-            ));
-        }
         match context
             .client
             .set_data(
@@ -1163,6 +1102,7 @@ impl ProtestApp {
             },
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         }
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // step 3: create a join team request in memory
         let agent = match ProtestApp::get_agent_info(context).await {
             ErrorReturn::Object(agent) => agent,
@@ -1225,16 +1165,9 @@ impl ProtestApp {
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
         // step 5.0: establish contact with coordinator
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         match context.client.add_contact(coordinator_id.clone()).await {
-            Ok(_) => context.client.end_transaction().await,
+            Ok(_) => {}
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Unable To Add Coordinator As Contact. {}",
                     err
@@ -1243,12 +1176,6 @@ impl ProtestApp {
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
         // step 5: share join team request
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         let coordinator_name = args.get_one::<String>("coordinator_name").unwrap();
         let writers = vec![coordinator_name];
         match context
@@ -1260,11 +1187,9 @@ impl ProtestApp {
             .await
         {
             Ok(_) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Object(String::from("Coordinator"));
             }
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Join Team Request Could Not Be Shared. {}",
                     err.to_string()
@@ -1320,20 +1245,13 @@ impl ProtestApp {
             },
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // note: keep track of reason (or no reason) to reject join team request
         let mut status = JoinTeamRequestStatus::Accepted;
         // step 2: retrieve agent's join team request (if it exists).
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         let data_id = String::from(format!("join_team_request/{}", agent_alias));
         let mut join_team_request = match context.client.get_data(&data_id).await {
             Ok(Some(join_team_request_obj)) => {
-                context.client.end_transaction().await;
                 let join_team_request: JoinTeamRequest =
                     serde_json::from_str(join_team_request_obj.data_val()).unwrap();
                 // don't reconsider already rejected
@@ -1345,7 +1263,7 @@ impl ProtestApp {
                     JoinTeamRequestStatus::Active => {}
                 }
                 // important! note: no two agents in a team can share the same alias
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                // std::thread::sleep(std::time::Duration::from_secs(1));
                 match ProtestApp::get_agent_list(context).await {
                     ErrorReturn::Object(agent_list) => {
                         if agent_alias == agent_list.coordinator.alias {
@@ -1366,14 +1284,12 @@ impl ProtestApp {
                 join_team_request
             }
             Ok(None) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "Client Error: Join Team Request From {} Does Not Exist",
                     agent_alias
                 )));
             }
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Agent Data Could Not Be Retrieved. {}",
                     err
@@ -1381,7 +1297,7 @@ impl ProtestApp {
             }
         };
         // step 3: add agent to team (if there is no reason to reject request)
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         let result = context.client.start_transaction();
         if result.is_err() {
             return ErrorReturn::Error(String::from(
@@ -1403,9 +1319,7 @@ impl ProtestApp {
             )
             .await
         {
-            Ok(_) => {
-                context.client.end_transaction().await;
-            }
+            Ok(_) => {}
             Err(err) => {
                 context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
@@ -1417,22 +1331,16 @@ impl ProtestApp {
         match status {
             JoinTeamRequestStatus::Accepted => {
                 // step 3.5: add accepted agent to agent list
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                // std::thread::sleep(std::time::Duration::from_secs(1));
                 let mut agent_list = match ProtestApp::get_agent_list(context).await {
                     ErrorReturn::Object(agent_list) => agent_list,
                     ErrorReturn::Error(err) => return ErrorReturn::Error(err),
                 };
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                // std::thread::sleep(std::time::Duration::from_secs(1));
                 agent_list
                     .follower_list
                     .insert(agent_alias.clone(), join_team_request.agent.clone());
                 let json_agent_list = serde_json::to_string(&agent_list).unwrap();
-                let res = context.client.start_transaction();
-                if res.is_err() {
-                    return ErrorReturn::Error(String::from(
-                        "System Error: Cannot Start Transaction",
-                    ));
-                }
                 match context
                     .client
                     .set_data(
@@ -1461,12 +1369,11 @@ impl ProtestApp {
                 let readers = vec![&reader];
                 match context
                     .client
-                    .add_do_readers(String::from("agent_list"), readers.clone())
+                    .add_readers(String::from("agent_list"), readers.clone())
                     .await
                 {
                     Ok(_) => {}
                     Err(err) => {
-                        context.client.end_transaction().await;
                         return ErrorReturn::Error(String::from(format!(
                             "System Error: Agent List Could Not Be Shared. {}",
                             err
@@ -1476,18 +1383,16 @@ impl ProtestApp {
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 match context
                     .client
-                    .add_do_readers(String::from("committed_operations_list"), readers)
+                    .add_readers(String::from("committed_operations_list"), readers)
                     .await
                 {
                     Ok(_) => {
-                        context.client.end_transaction().await;
                         return ErrorReturn::Object(String::from(format!(
                             "{}",
                             agent_alias
                         )));
                     }
                     Err(err) => {
-                        context.client.end_transaction().await;
                         return ErrorReturn::Error(String::from(format!(
                             "System Error: Agent List Could Not Be Shared. {}",
                             err
@@ -1496,11 +1401,13 @@ impl ProtestApp {
                 }
             }
             JoinTeamRequestStatus::Denied(_) => {
-                return ErrorReturn::Object(String::from(
+                context.client.end_transaction().await;
+                return ErrorReturn::Error(String::from(
                     "Client Error: Provided Agent Alias Is Already In Use In The Team",
-                ))
+                ));
             }
             JoinTeamRequestStatus::Active => {
+                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(
                     "System Error: This Line Of Code Should be Unreachable",
                 ));
@@ -1543,14 +1450,14 @@ impl ProtestApp {
                 ))
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // step 1: get agent list
         let mut agent_list = match ProtestApp::get_agent_list(context).await {
             ErrorReturn::Object(agent_list) => agent_list,
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         };
         // step 2: update agent list
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         match agent_list.follower_list.remove(&agent_alias) {
             Some(_) => {}
             None => {
@@ -1609,7 +1516,6 @@ impl ProtestApp {
     async fn check_join_team_request(context: &mut Arc<Self>) -> ErrorReturn<String> {
         // step 1: check that device exists
         if !context.exists_device().await {
-            context.client.end_transaction().await;
             return ErrorReturn::Error(String::from(
                 "Client Error: Device Does Not Exist. Please Login First",
             ));
@@ -1618,21 +1524,14 @@ impl ProtestApp {
             ErrorReturn::Object(alias) => alias,
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         };
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // step 2: check status of join team request
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         match context
             .client
             .get_data(&String::from(format!("join_team_request/{}", alias)))
             .await
         {
             Ok(Some(join_team_request_obj)) => {
-                context.client.end_transaction().await;
                 // step 2.5: update agent if join team request was accepted
                 let join_team_request: JoinTeamRequest =
                     serde_json::from_str(join_team_request_obj.data_val()).unwrap();
@@ -1644,7 +1543,7 @@ impl ProtestApp {
                         };
                         agent.coordinator_alias =
                             Some(join_team_request.coordinator_alias);
-                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        // std::thread::sleep(std::time::Duration::from_secs(1));
                         let result = context.client.start_transaction();
                         if result.is_err() {
                             return ErrorReturn::Error(String::from(
@@ -1688,13 +1587,11 @@ impl ProtestApp {
                 }
             }
             Ok(None) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(
                     "System Error: Join Team Request Does Not Exist",
                 ));
             }
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Join Team Request Could Not Be Retrieved. {}",
                     err
@@ -1794,12 +1691,6 @@ impl ProtestApp {
             agent.alias,
             agent_to_alias
         ));
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         let mut private_messages: PrivateMessageChain;
         let mut created_new_chain = false;
         match context.client.get_data(&data_id.clone()).await {
@@ -1827,15 +1718,13 @@ impl ProtestApp {
                 created_new_chain = true
             }
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Private Messages Could Not Be Retrieved. {}",
                     err
                 )));
             }
         }
-        context.client.end_transaction().await;
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         let result = context.client.start_transaction();
         if result.is_err() {
             return ErrorReturn::Error(String::from(
@@ -1867,13 +1756,13 @@ impl ProtestApp {
                 )));
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // step 4: share message chain with message recipient
         let agent_list = match ProtestApp::get_agent_list(context).await {
             ErrorReturn::Object(agent_list) => agent_list,
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         };
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         let reader = match agent_list.follower_list.get(&agent_to_alias) {
             Some(agent) => agent.clone(),
             None => {
@@ -1888,39 +1777,21 @@ impl ProtestApp {
             }
         };
         if created_new_chain {
-            let result = context.client.start_transaction();
-            if result.is_err() {
-                return ErrorReturn::Error(String::from(
-                    "System Error: Unable To Start Transaction",
-                ));
-            }
             std::thread::sleep(std::time::Duration::from_secs(1));
             match context.client.add_contact(reader.id.clone()).await {
-                Ok(_) => {
-                    context.client.end_transaction().await;
-                }
+                Ok(_) => {}
                 Err(err) => {
-                    context.client.end_transaction().await;
                     return ErrorReturn::Error(String::from(format!(
                         "System Error: Unable To Add Agent To As Contact. {}",
                         err
                     )));
                 }
             }
-            let result = context.client.start_transaction();
-            if result.is_err() {
-                return ErrorReturn::Error(String::from(
-                    "System Error: Unable To Start Transaction",
-                ));
-            }
             std::thread::sleep(std::time::Duration::from_secs(1));
             let readers = vec![&reader.name];
             match context.client.add_do_readers(data_id, readers).await {
-                Ok(_) => {
-                    context.client.end_transaction().await;
-                }
+                Ok(_) => {}
                 Err(err) => {
-                    context.client.end_transaction().await;
                     return ErrorReturn::Error(String::from(format!(
                         "System Error: Message Chain Could Not Be Shared. {}",
                         err
@@ -2052,34 +1923,22 @@ impl ProtestApp {
             agent.alias,
             agent_to_alias
         ));
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         let self_to_message_chain: Option<PrivateMessageChain>;
         match context.client.get_data(&data_id.clone()).await {
             Ok(Some(private_messages_object)) => {
-                context.client.end_transaction().await;
                 let private_messages =
                     serde_json::from_str(private_messages_object.data_val()).unwrap();
                 self_to_message_chain = Some(private_messages);
                 both_nonexistent = false;
             }
-            Ok(None) => {
-                context.client.end_transaction().await;
-                self_to_message_chain = None
-            }
+            Ok(None) => self_to_message_chain = None,
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Private Messages Could Not Be Retrieved. {}",
                     err
                 )));
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
         // step 2: get agent_to to agent_self messages
         let data_id = String::from(format!(
             "private_messages/{}/{}/{}",
@@ -2087,51 +1946,35 @@ impl ProtestApp {
             agent_to_alias,
             agent.alias
         ));
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         let to_self_message_chain: Option<PrivateMessageChain>;
         match context.client.get_data(&data_id.clone()).await {
             Ok(Some(private_messages_object)) => {
-                context.client.end_transaction().await;
                 let private_messages: PrivateMessageChain =
                     serde_json::from_str(private_messages_object.data_val()).unwrap();
                 to_self_message_chain = Some(private_messages.clone());
                 both_nonexistent = false;
                 // step 2.5: update private messages info with new timestamp
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                // std::thread::sleep(std::time::Duration::from_secs(1));
                 let new_timestamp = private_messages.last_message_time_stamp;
                 let mut new_private_messages_info: PrivateMessagesInfo;
                 // get private messages info from key value store & update
-                let result = context.client.start_transaction();
-                if result.is_err() {
-                    return ErrorReturn::Error(String::from(
-                        "System Error: Unable To Start Transaction",
-                    ));
-                }
                 match context
                     .client
                     .get_data(&String::from("private_messages_info"))
                     .await
                 {
                     Ok(Some(private_messages_info_object)) => {
-                        context.client.end_transaction().await;
                         let private_messages_info: PrivateMessagesInfo =
                             serde_json::from_str(private_messages_info_object.data_val())
                                 .unwrap();
                         new_private_messages_info = private_messages_info;
                     }
                     Ok(None) => {
-                        context.client.end_transaction().await;
                         new_private_messages_info = PrivateMessagesInfo {
                             last_observed_time_stamp_from: HashMap::new(),
                         }
                     }
                     Err(err) => {
-                        context.client.end_transaction().await;
                         return ErrorReturn::Error(String::from(format!(
                             "System Error: Private Messages Info Could Not Be Retrieved. {}",
                             err
@@ -2142,7 +1985,7 @@ impl ProtestApp {
                     .last_observed_time_stamp_from
                     .insert(agent_to_alias.clone(), new_timestamp.clone());
                 // commit private messages info to key value store
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                // std::thread::sleep(std::time::Duration::from_secs(1));
                 let result = context.client.start_transaction();
                 if result.is_err() {
                     return ErrorReturn::Error(String::from(
@@ -2310,34 +2153,23 @@ impl ProtestApp {
             agent.alias,
             agent_to_alias
         ));
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         let self_to_message_chain: Option<PrivateMessageChain>;
         match context.client.get_data(&data_id.clone()).await {
             Ok(Some(private_messages_object)) => {
-                context.client.end_transaction().await;
                 let private_messages =
                     serde_json::from_str(private_messages_object.data_val()).unwrap();
                 self_to_message_chain = Some(private_messages);
                 both_nonexistent = false;
             }
-            Ok(None) => {
-                context.client.end_transaction().await;
-                self_to_message_chain = None
-            }
+            Ok(None) => self_to_message_chain = None,
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Private Messages Could Not Be Retrieved. {}",
                     err
                 )));
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // step 2: get agent_to to agent_self messages
         let data_id = String::from(format!(
             "private_messages/{}/{}/{}",
@@ -2345,38 +2177,24 @@ impl ProtestApp {
             agent_to_alias,
             agent.alias
         ));
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         let to_self_message_chain: Option<PrivateMessageChain>;
         match context.client.get_data(&data_id.clone()).await {
             Ok(Some(private_messages_object)) => {
-                context.client.end_transaction().await;
                 let private_messages: PrivateMessageChain =
                     serde_json::from_str(private_messages_object.data_val()).unwrap();
                 to_self_message_chain = Some(private_messages.clone());
                 both_nonexistent = false;
                 // step 2.5: update private messages info with new timestamp
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                // std::thread::sleep(std::time::Duration::from_secs(1));
                 let new_timestamp = private_messages.last_message_time_stamp;
                 let mut new_private_messages_info: PrivateMessagesInfo;
                 // get private messages info from key value store & update
-                let result = context.client.start_transaction();
-                if result.is_err() {
-                    return ErrorReturn::Error(String::from(
-                        "System Error: Unable To Start Transaction",
-                    ));
-                }
                 match context
                     .client
                     .get_data(&String::from("private_messages_info"))
                     .await
                 {
                     Ok(Some(private_messages_info_object)) => {
-                        context.client.end_transaction().await;
                         let private_messages_info: PrivateMessagesInfo =
                             serde_json::from_str(private_messages_info_object.data_val())
                                 .unwrap();
@@ -2394,13 +2212,11 @@ impl ProtestApp {
                         };
                     }
                     Ok(None) => {
-                        context.client.end_transaction().await;
                         new_private_messages_info = PrivateMessagesInfo {
                             last_observed_time_stamp_from: HashMap::new(),
                         }
                     }
                     Err(err) => {
-                        context.client.end_transaction().await;
                         return ErrorReturn::Error(String::from(format!(
                             "System Error: Private Messages Info Could Not Be Retrieved. {}",
                             err
@@ -2411,7 +2227,7 @@ impl ProtestApp {
                     .last_observed_time_stamp_from
                     .insert(agent_to_alias.clone(), new_timestamp.clone());
                 // commit private messages info to key value store
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                // std::thread::sleep(std::time::Duration::from_secs(1));
                 let result = context.client.start_transaction();
                 if result.is_err() {
                     return ErrorReturn::Error(String::from(
@@ -2444,12 +2260,8 @@ impl ProtestApp {
                     }
                 }
             }
-            Ok(None) => {
-                context.client.end_transaction().await;
-                to_self_message_chain = None
-            }
+            Ok(None) => to_self_message_chain = None,
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Private Messages Could Not Be Retrieved. {}",
                     err
@@ -2469,7 +2281,6 @@ impl ProtestApp {
                 agent.alias, agent_to_alias
             )));
         }
-        // print!("{:?}", time_last_message_viewed);
         return ErrorReturn::Object(ProtestApp::format_message_chains_t(
             self_to_message_chain,
             vec_to_self_message_chain,
@@ -2515,7 +2326,6 @@ impl ProtestApp {
         message_index: Option<u32>,
         context: &mut Arc<Self>,
     ) -> ErrorReturn<String> {
-        // step 1: get agent_to_alias message chain
         // step 0: check that device exists
         if !context.exists_device().await {
             return ErrorReturn::Error(String::from(
@@ -2533,36 +2343,27 @@ impl ProtestApp {
             agent.alias,
             agent_to_alias
         ));
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         let mut self_to_message_chain: PrivateMessageChain;
         match context.client.get_data(&data_id.clone()).await {
             Ok(Some(private_messages_object)) => {
-                context.client.end_transaction().await;
                 let private_messages =
                     serde_json::from_str(private_messages_object.data_val()).unwrap();
                 self_to_message_chain = private_messages;
             }
             Ok(None) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "Client Error: There Are No Messages From {} To {}",
                     agent.alias, agent_to_alias
                 )));
             }
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Private Messages Could Not Be Retrieved. {}",
                     err
                 )));
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // step 2: delete appropriate message
         match message_index {
             Some(message_index) => {
@@ -2669,12 +2470,6 @@ impl ProtestApp {
             agent.coordinator_alias.unwrap(),
             agent.alias,
         ));
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         let mut public_messages: PublicMessageChain;
         match context.client.get_data(&data_id.clone()).await {
             // step 2.1: in this case, append to existing message chain
@@ -2697,15 +2492,12 @@ impl ProtestApp {
                 };
             }
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Private Messages Could Not Be Retrieved. {}",
                     err
                 )));
             }
         }
-        context.client.end_transaction().await;
-        std::thread::sleep(std::time::Duration::from_secs(1));
         let result = context.client.start_transaction();
         if result.is_err() {
             return ErrorReturn::Error(String::from(
@@ -2737,7 +2529,7 @@ impl ProtestApp {
                 )));
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // step 4: share message chain with every member in the team (excluding self)
         let agent_list = match ProtestApp::get_agent_list(context).await {
             ErrorReturn::Object(agent_list) => agent_list,
@@ -2752,18 +2544,9 @@ impl ProtestApp {
             if *alias == agent.alias {
                 continue;
             }
-            let result = context.client.start_transaction();
-            if result.is_err() {
-                return ErrorReturn::Error(String::from(
-                    "System Error: Unable To Start Transaction",
-                ));
-            }
             match context.client.add_contact(agentl.id.clone()).await {
-                Ok(_) => {
-                    context.client.end_transaction().await;
-                }
+                Ok(_) => {}
                 Err(err) => {
-                    context.client.end_transaction().await;
                     return ErrorReturn::Error(String::from(format!(
                         "System Error: Unable To Add {} As Contact. {}",
                         alias, err
@@ -2781,11 +2564,8 @@ impl ProtestApp {
             }
         }
         match context.client.add_do_readers(data_id, readers).await {
-            Ok(_) => {
-                context.client.end_transaction().await;
-            }
+            Ok(_) => {}
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Message Chain Could Not Be Shared. {}",
                     err
@@ -2843,34 +2623,23 @@ impl ProtestApp {
             agent.coordinator_alias.clone().unwrap(),
             agent.alias,
         ));
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         let self_to_message_chain: Option<PublicMessageChain>;
         match context.client.get_data(&data_id.clone()).await {
             Ok(Some(public_messages_object)) => {
-                context.client.end_transaction().await;
                 let public_messages =
                     serde_json::from_str(public_messages_object.data_val()).unwrap();
                 self_to_message_chain = Some(public_messages);
                 both_nonexistent = false;
             }
-            Ok(None) => {
-                context.client.end_transaction().await;
-                self_to_message_chain = None
-            }
+            Ok(None) => self_to_message_chain = None,
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Public Messages Could Not Be Retrieved. {}",
                     err
                 )));
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // step 2.0: generate a list of agent aliases
         let agent_aliases: Vec<String>;
         match ProtestApp::get_agent_list(context).await {
@@ -2879,7 +2648,7 @@ impl ProtestApp {
             }
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // step 2: get public messages from all other agents
         let mut vec_message_chains: Vec<PublicMessageChain> = Vec::new();
         for agent_a in agent_aliases {
@@ -2891,27 +2660,16 @@ impl ProtestApp {
                 agent.coordinator_alias.clone().unwrap(),
                 agent_a
             ));
-            let result = context.client.start_transaction();
-            if result.is_err() {
-                return ErrorReturn::Error(String::from(
-                    "System Error: Unable To Start Transaction",
-                ));
-            }
             let public_message_chain: Option<PublicMessageChain>;
             match context.client.get_data(&data_id.clone()).await {
                 Ok(Some(public_messages_object)) => {
-                    context.client.end_transaction().await;
                     let public_messages =
                         serde_json::from_str(public_messages_object.data_val()).unwrap();
                     public_message_chain = Some(public_messages);
                     both_nonexistent = false;
                 }
-                Ok(None) => {
-                    context.client.end_transaction().await;
-                    public_message_chain = None
-                }
+                Ok(None) => public_message_chain = None,
                 Err(err) => {
-                    context.client.end_transaction().await;
                     return ErrorReturn::Error(String::from(format!(
                         "System Error: Public Messages Could Not Be Retrieved. {}",
                         err
@@ -2924,7 +2682,6 @@ impl ProtestApp {
                 }
                 None => {}
             };
-            std::thread::sleep(std::time::Duration::from_secs(1));
         }
         // step 3: return formatted messages
         if both_nonexistent {
@@ -2970,7 +2727,6 @@ impl ProtestApp {
         message_index: Option<u32>,
         context: &mut Arc<Self>,
     ) -> ErrorReturn<String> {
-        // step 1: get agent_to_alias message chain
         // step 0: check that device exists
         if !context.exists_device().await {
             return ErrorReturn::Error(String::from(
@@ -2987,36 +2743,27 @@ impl ProtestApp {
             agent.coordinator_alias.clone().unwrap(),
             agent.alias,
         ));
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         let mut self_to_message_chain: PublicMessageChain;
         match context.client.get_data(&data_id.clone()).await {
             Ok(Some(public_messages_object)) => {
-                context.client.end_transaction().await;
                 let public_messages =
                     serde_json::from_str(public_messages_object.data_val()).unwrap();
                 self_to_message_chain = public_messages;
             }
             Ok(None) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "Client Error: There Are No Messages From {}",
                     agent.alias
                 )));
             }
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Public Messages Could Not Be Retrieved. {}",
                     err
                 )));
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // step 2: delete appropriate message
         match message_index {
             Some(message_index) => {
@@ -3077,7 +2824,7 @@ impl ProtestApp {
     ) -> ReplResult<Option<String>> {
         let agent_location: AgentLocation;
         let x_location = args.get_one::<String>("longitude").unwrap().to_string();
-        if x_location == "auto" {
+        if x_location == "Auto" {
             agent_location = AgentLocation::Auto;
         } else {
             let y_location = args.get_one::<String>("latitude").unwrap().to_string();
@@ -3152,7 +2899,7 @@ impl ProtestApp {
             Err(err) => {
                 context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
-                    "System Error: Private Messages Info Could Not Be Updated. {}",
+                    "System Error: Agent Location Could Not Be Updated. {}",
                     err.to_string()
                 )));
             }
@@ -3183,19 +2930,12 @@ impl ProtestApp {
             ));
         }
         // step 2: get location to key value store
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         match context
             .client
             .get_data(&String::from("agent_location"))
             .await
         {
             Ok(Some(agent_location_object)) => {
-                context.client.end_transaction().await;
                 let agent_location: AgentLocation =
                     serde_json::from_str(agent_location_object.data_val()).unwrap();
                 match agent_location {
@@ -3209,13 +2949,11 @@ impl ProtestApp {
                 }
             }
             Ok(None) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(
                     "Client Error: Location Has Not Been Set By Agent",
                 ));
             }
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Public Messages Could Not Be Retrieved. {}",
                     err
@@ -3231,14 +2969,7 @@ impl ProtestApp {
         context: &mut Arc<Self>,
     ) -> ErrorReturn<Option<Vec<Location>>> {
         // step 1: check that device exists and start transaction
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         if !context.exists_device().await {
-            context.client.end_transaction().await;
             return ErrorReturn::Error(String::from(
                 "Client Error: Device Does Not Exist. Please Login First",
             ));
@@ -3250,19 +2981,16 @@ impl ProtestApp {
         ));
         match context.client.get_data(&data_id).await {
             Ok(Some(location_database_obj)) => {
-                context.client.end_transaction().await;
                 let location_database: Vec<Location> =
                     serde_json::from_str(location_database_obj.data_val()).unwrap();
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                // std::thread::sleep(std::time::Duration::from_secs(1));
                 return ErrorReturn::Object(Some(location_database));
             }
             Ok(None) => {
-                context.client.end_transaction().await;
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                // std::thread::sleep(std::time::Duration::from_secs(1));
                 return ErrorReturn::Object(None);
             }
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Agent Location Database Could Not Be Retrieved. {}",
                     err
@@ -3311,7 +3039,7 @@ impl ProtestApp {
         {
             Ok(_) => {
                 context.client.end_transaction().await;
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                // std::thread::sleep(std::time::Duration::from_secs(1));
                 return ErrorReturn::Object(String::from(""));
             }
             Err(err) => {
@@ -3334,7 +3062,7 @@ impl ProtestApp {
             ErrorReturn::Object(agent_alias) => agent_alias,
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         };
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         let agent_list = match ProtestApp::get_agent_list(context).await {
             ErrorReturn::Object(agent_list) => agent_list,
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
@@ -3348,18 +3076,9 @@ impl ProtestApp {
             if *alias == agent_alias {
                 continue;
             }
-            let result = context.client.start_transaction();
-            if result.is_err() {
-                return ErrorReturn::Error(String::from(
-                    "System Error: Unable To Start Transaction",
-                ));
-            }
             match context.client.add_contact(agent.id.clone()).await {
-                Ok(_) => {
-                    context.client.end_transaction().await;
-                }
+                Ok(_) => {}
                 Err(err) => {
-                    context.client.end_transaction().await;
                     return ErrorReturn::Error(String::from(format!(
                         "System Error: Unable To Add {} As Contact. {}",
                         alias, err
@@ -3377,12 +3096,10 @@ impl ProtestApp {
         }
         match context.client.add_do_readers(data_id, readers).await {
             Ok(_) => {
-                context.client.end_transaction().await;
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                // std::thread::sleep(std::time::Duration::from_secs(1));
                 return ErrorReturn::Object(String::from(""));
             }
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Message Chain Could Not Be Shared. {}",
                     err
@@ -3463,7 +3180,7 @@ impl ProtestApp {
             ErrorReturn::Object(agent) => agent,
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         };
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         let location = Location {
             point,
             location_type,
@@ -3550,7 +3267,7 @@ impl ProtestApp {
             ErrorReturn::Object(agent) => agent,
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         };
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         if agent.coordinator_alias == None {
             return ErrorReturn::Error(String::from(
                 "Client Error: Join A Team First Before Attempting To Remove Location",
@@ -3608,7 +3325,7 @@ impl ProtestApp {
         location_database: Vec<Location>,
     ) -> String {
         let mut formatted_database = String::from("");
-        formatted_database.push_str(&String::from(format!("{}:\n\n", agent_alias)));
+        formatted_database.push_str(&String::from(format!("{}:\n", agent_alias)));
         let mut index: u32 = 0;
         for location in location_database {
             formatted_database.push_str(&String::from(format!(
@@ -3642,7 +3359,7 @@ impl ProtestApp {
             ErrorReturn::Object(agent) => agent,
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         };
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         if agent.coordinator_alias == None {
             return ErrorReturn::Error(String::from(
                 "Client Error: Agent Must Have Joined A Team First",
@@ -3680,7 +3397,7 @@ impl ProtestApp {
         for location_database in location_databases {
             let mut formatted_database = String::from("");
             formatted_database
-                .push_str(&String::from(format!("{}:\n\n", location_database.0)));
+                .push_str(&String::from(format!("{}:\n", location_database.0)));
             for location in location_database.1 {
                 formatted_database.push_str(&String::from(format!(
                     "{}: longitude: {}, latitude: {}\n",
@@ -3735,7 +3452,7 @@ impl ProtestApp {
             ErrorReturn::Object(point) => point,
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         };
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         match distance_from_agent {
             Some(distance_from_agent) => {
                 location_database = location_database
@@ -3781,9 +3498,9 @@ impl ProtestApp {
                     }
                     Err(err) => {
                         return Ok(Some(String::from(format!(
-                        "Client Error: distance_from_agent Must Be A Valid Integer. {}",
-                        err
-                    ))))
+                            "Client Error: distance_from_agent Must Be A Valid Float. {}",
+                            err
+                        ))))
                     }
                 }
             }
@@ -4068,7 +3785,7 @@ impl ProtestApp {
             ErrorReturn::Object(agent) => agent,
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         };
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // check that agent has joined a team already
         match agent.coordinator_alias {
             Some(_) => {}
@@ -4113,7 +3830,7 @@ impl ProtestApp {
         {
             Ok(_) => {
                 context.client.end_transaction().await;
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                // std::thread::sleep(std::time::Duration::from_secs(1));
             }
             Err(err) => {
                 context.client.end_transaction().await;
@@ -4191,7 +3908,7 @@ impl ProtestApp {
                 ));
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // step a: set operation proposal and share with team
         let data_id = String::from(format!(
             "operation_proposal_vote/{}/{}/{}/{}",
@@ -4221,7 +3938,7 @@ impl ProtestApp {
         {
             Ok(_) => {
                 context.client.end_transaction().await;
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                // std::thread::sleep(std::time::Duration::from_secs(1));
             }
             Err(err) => {
                 context.client.end_transaction().await;
@@ -4322,7 +4039,7 @@ impl ProtestApp {
             ErrorReturn::Object(agent) => agent,
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         };
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // check that agent has joined a team already
         match agent.coordinator_alias {
             Some(_) => {}
@@ -4340,39 +4057,30 @@ impl ProtestApp {
             agent_alias.clone(),
             operation_name.clone()
         ));
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         match context.client.get_data(&data_id.clone()).await {
             Ok(Some(operation_proposal_object)) => {
-                context.client.end_transaction().await;
                 operation_proposal =
                     serde_json::from_str(operation_proposal_object.data_val()).unwrap();
             }
             Ok(None) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(
                     "Client Error: Queried Operation Proposal Does Not Exist",
                 ));
             }
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Operation Proposal Could Not Be Retrieved. {}",
                     err
                 )));
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // step 2: compile hash table of agent votes for proposal
         let mut agent_list = match ProtestApp::get_agent_list(context).await {
             ErrorReturn::Object(agent_list) => agent_list,
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         };
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         agent_list.follower_list.insert(
             agent_list.coordinator.alias.clone(),
             agent_list.coordinator.clone(),
@@ -4387,25 +4095,16 @@ impl ProtestApp {
                 operation_name.clone(),
                 agent_alias_l.clone()
             ));
-            let result = context.client.start_transaction();
-            if result.is_err() {
-                return ErrorReturn::Error(String::from(
-                    "System Error: Unable To Start Transaction",
-                ));
-            }
             match context.client.get_data(&data_id.clone()).await {
                 Ok(Some(operation_proposal_vote_object)) => {
-                    context.client.end_transaction().await;
                     operation_proposal_vote =
                         serde_json::from_str(operation_proposal_vote_object.data_val())
                             .unwrap();
                 }
                 Ok(None) => {
-                    context.client.end_transaction().await;
                     operation_proposal_vote = None;
                 }
                 Err(err) => {
-                    context.client.end_transaction().await;
                     return ErrorReturn::Error(String::from(format!(
                         "System Error: Operation Proposal Vote Could Not Be Retrieved. {}",
                         err
@@ -4413,7 +4112,7 @@ impl ProtestApp {
                 }
             }
             agent_votes.insert(agent_alias_l, operation_proposal_vote);
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            // std::thread::sleep(std::time::Duration::from_secs(1));
         }
         // step 3: get committed flag
         let data_id = String::from(format!(
@@ -4423,22 +4122,12 @@ impl ProtestApp {
             operation_name.clone()
         ));
         let mut committed = false;
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         match context.client.get_data(&data_id.clone()).await {
             Ok(Some(_)) => {
-                context.client.end_transaction().await;
                 committed = true;
             }
-            Ok(None) => {
-                context.client.end_transaction().await;
-            }
+            Ok(None) => {}
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Committed Flag Could Not Be Retrieved. {}",
                     err
@@ -4498,38 +4187,29 @@ impl ProtestApp {
                 ))
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // step 1: get committed operations list
         let mut committed_operations_list: Vec<OperationProposal>;
         let data_id = String::from("committed_operations_list");
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         match context.client.get_data(&data_id.clone()).await {
             Ok(Some(committed_operations_list_object)) => {
-                context.client.end_transaction().await;
                 committed_operations_list =
                     serde_json::from_str(committed_operations_list_object.data_val())
                         .unwrap();
             }
             Ok(None) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(
                     "Client Error: Committed Operations List Does Not Exist",
                 ));
             }
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Committed Operations List Could Not Be Retrieved. {}",
                     err
                 )));
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         // step 1.5: get operation to commit
         let operation_proposal: OperationProposal;
         let data_id = String::from(format!(
@@ -4538,33 +4218,24 @@ impl ProtestApp {
             agent_alias.clone(),
             operation_name.clone()
         ));
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         match context.client.get_data(&data_id.clone()).await {
             Ok(Some(operation_proposal_object)) => {
-                context.client.end_transaction().await;
                 operation_proposal =
                     serde_json::from_str(operation_proposal_object.data_val()).unwrap();
             }
             Ok(None) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(
                     "Client Error: Queried Operation Proposal Does Not Exist",
                 ));
             }
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Operation Proposal Could Not Be Retrieved. {}",
                     err
                 )));
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // std::thread::sleep(std::time::Duration::from_secs(1));
         if !(operation_proposal.start_time <= operation_proposal.end_time) {
             return ErrorReturn::Error(String::from(
                 "Client Error: end_date Must Be Monotonically Greater Than start_date",
@@ -4632,9 +4303,7 @@ impl ProtestApp {
             )
             .await
         {
-            Ok(_) => {
-                context.client.end_transaction().await;
-            }
+            Ok(_) => {}
             Err(err) => {
                 context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
@@ -4652,12 +4321,6 @@ impl ProtestApp {
             agent_alias.clone(),
             operation_name.clone()
         ));
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         match context
             .client
             .set_data(
@@ -4700,27 +4363,18 @@ impl ProtestApp {
     async fn get_committed_operations(context: &mut Arc<Self>) -> ErrorReturn<String> {
         let committed_operations_list: Vec<OperationProposal>;
         let data_id = String::from("committed_operations_list");
-        let result = context.client.start_transaction();
-        if result.is_err() {
-            return ErrorReturn::Error(String::from(
-                "System Error: Unable To Start Transaction",
-            ));
-        }
         match context.client.get_data(&data_id.clone()).await {
             Ok(Some(committed_operations_list_object)) => {
-                context.client.end_transaction().await;
                 committed_operations_list =
                     serde_json::from_str(committed_operations_list_object.data_val())
                         .unwrap();
             }
             Ok(None) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(
                     "Client Error: Committed Operations List Does Not Exist",
                 ));
             }
             Err(err) => {
-                context.client.end_transaction().await;
                 return ErrorReturn::Error(String::from(format!(
                     "System Error: Committed Operations List Could Not Be Retrieved. {}",
                     err
@@ -4876,7 +4530,7 @@ async fn main() -> ReplResult<()> {
                 .arg(Arg::new("agent_to_alias").required(true))
                 .arg(Arg::new("message").required(true))
                 .arg(Arg::new("message_type").required(false))
-                .about("send_private_message <message> <message_type>"),
+                .about("send_private_message <agent_to_alias> <message> <message_type>"),
             |args, context| Box::pin(ProtestApp::send_private_message_cmd(args, context)),
         )
         .with_command_async(
@@ -4918,9 +4572,8 @@ async fn main() -> ReplResult<()> {
         )
         .with_command_async(
             Command::new("delete_public_message")
-                .arg(Arg::new("agent_to_alias").required(true))
                 .arg(Arg::new("message_index").required(false))
-                .about("delete_public_message <agent_to_alias> <message_index>"),
+                .about("delete_public_message <message_index>"),
             |args, context| {
                 Box::pin(ProtestApp::delete_public_message_cmd(args, context))
             },
@@ -4929,7 +4582,7 @@ async fn main() -> ReplResult<()> {
             Command::new("update_agent_location")
                 .arg(Arg::new("longitude").required(true))
                 .arg(Arg::new("latitude").required(false))
-                .about("update_agent_location <longitude> <latitude> or delete_public_message auto"),
+                .about("update_agent_location <longitude> <latitude> or delete_public_message Auto"),
             |args, context| {
                 Box::pin(ProtestApp::update_agent_location_cmd(args, context))
             },
