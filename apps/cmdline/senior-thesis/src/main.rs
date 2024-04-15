@@ -4606,7 +4606,7 @@ impl ProtestApp {
         match context
             .client
             .set_data(
-                data_id,
+                data_id.clone(),
                 String::from("committed_operation/committed"),
                 json_committed,
                 None,
@@ -4617,6 +4617,11 @@ impl ProtestApp {
         {
             Ok(_) => {
                 context.client.end_transaction().await;
+                // step 5: share committed flag with team
+                match ProtestApp::share_to_team_as_readers(data_id, context).await {
+                    ErrorReturn::Object(_) => {}
+                    ErrorReturn::Error(err) => return ErrorReturn::Error(err),
+                }
                 return ErrorReturn::Object(String::from(""));
             }
             Err(err) => {
