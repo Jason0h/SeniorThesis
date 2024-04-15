@@ -1,3 +1,5 @@
+// Protest App: Senior Thesis Project
+
 // TODO: find a way for scuba internal code to not panic
 // TODO: find a way for artificial waits to not be necessary for code functionality
 
@@ -409,6 +411,132 @@ impl ProtestApp {
         .await
     }
 
+    // helper: register client side write checks
+    async fn register_checks(context: &mut Arc<Self>) {
+        let device_guard = context.client.device.read();
+        let mut data_store_guard = device_guard.as_ref().unwrap().data_store.write();
+        // write check for agent_list (no alias repeats in agent list)
+        data_store_guard.validator().set_validate_callback_for_type(
+            String::from("agent_list"),
+            |_, val| {
+                let agent_list = match serde_json::from_str::<AgentList>(val.data_val()) {
+                    Ok(agent_list) => agent_list,
+                    Err(_) => return false,
+                };
+                let follower_aliases: Vec<String> =
+                    agent_list.follower_list.keys().cloned().collect();
+                if follower_aliases.contains(&agent_list.coordinator.alias) {
+                    return false;
+                }
+                return true;
+            },
+        );
+        // write check for join team request (nothing in particular necessary)
+        data_store_guard.validator().set_validate_callback_for_type(
+            String::from("join_team_request"),
+            |_, val| {
+                match serde_json::from_str::<JoinTeamRequest>(val.data_val()) {
+                    Ok(_) => return true,
+                    Err(_) => return false,
+                };
+            },
+        );
+        // write check for committed operations list (make sure dates are monotonic)
+        data_store_guard.validator().set_validate_callback_for_type(
+            String::from("committed_operations_list"),
+            |_, val| {
+                let committed_operations_list = match serde_json::from_str::<
+                    Vec<OperationProposal>,
+                >(val.data_val())
+                {
+                    Ok(committed_operations_list) => committed_operations_list,
+                    Err(_) => return false,
+                };
+                for operation in &committed_operations_list {
+                    if !(operation.start_time <= operation.end_time) {
+                        return false;
+                    }
+                }
+                for i in 1..committed_operations_list.len() {
+                    if !(committed_operations_list[i - 1].end_time
+                        <= committed_operations_list[i].start_time)
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            },
+        );
+        // write check for private messages (dates are monotonic + correct timestamp)
+        data_store_guard.validator().set_validate_callback_for_type(
+            String::from("private_messages"),
+            |_, val| {
+                let private_message_chain =
+                    match serde_json::from_str::<PrivateMessageChain>(val.data_val()) {
+                        Ok(private_message_chain) => private_message_chain,
+                        Err(_) => return false,
+                    };
+                if !private_message_chain.message_chain.is_empty() {
+                    if private_message_chain.message_chain
+                        [private_message_chain.message_chain.len() - 1]
+                        .time_stamp
+                        != private_message_chain.last_message_time_stamp
+                    {
+                        return false;
+                    }
+                }
+                for i in 1..private_message_chain.message_chain.len() {
+                    if !(private_message_chain.message_chain[i - 1].time_stamp
+                        <= private_message_chain.message_chain[i].time_stamp)
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            },
+        );
+        // write check for public messages (dates are monotonic + correct timestamp)
+        data_store_guard.validator().set_validate_callback_for_type(
+            String::from("public_messages"),
+            |_, val| {
+                let public_message_chain =
+                    match serde_json::from_str::<PublicMessageChain>(val.data_val()) {
+                        Ok(public_message_chain) => public_message_chain,
+                        Err(_) => return false,
+                    };
+                for i in 1..public_message_chain.message_chain.len() {
+                    if !(public_message_chain.message_chain[i - 1].time_stamp
+                        <= public_message_chain.message_chain[i].time_stamp)
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            },
+        );
+        // write check for location database (nothing in particular necessary)
+        data_store_guard.validator().set_validate_callback_for_type(
+            String::from("location_database"),
+            |_, val| {
+                match serde_json::from_str::<Vec<Location>>(val.data_val()) {
+                    Ok(_) => return true,
+                    Err(_) => return false,
+                };
+            },
+        );
+        // write check for operation proposal (nothing in particular necessary)
+        data_store_guard.validator().set_validate_callback_for_type(
+            String::from("operation_proposal"),
+            |_, val| {
+                match serde_json::from_str::<OperationProposal>(val.data_val()) {
+                    Ok(_) => return true,
+                    Err(_) => return false,
+                };
+            },
+        );
+    }
+
     // not command: create client device and save personal information
     async fn signup_agent(
         alias: String,
@@ -446,6 +574,10 @@ impl ProtestApp {
                 ))));
             }
         }
+
+        // step CHECK: register client side write checks
+        ProtestApp::register_checks(context).await;
+
         // step a: setup private messages info data in memory
         let private_messages_info = PrivateMessagesInfo {
             last_observed_time_stamp_from: HashMap::new(),
