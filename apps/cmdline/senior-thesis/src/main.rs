@@ -377,6 +377,26 @@ impl ProtestApp {
 
     // PART 1: MISCELLANIOUS BASIC FUNCTIONALITY
 
+    const NAME_CHAR_LIMIT: usize = 30;
+
+    const MESSAGE_CHAR_LIMIT: usize = 300;
+
+    // helper: uphold formatting rules for names
+    fn is_valid_name(input: &String) -> bool {
+        if input.chars().count() > ProtestApp::NAME_CHAR_LIMIT {
+            return false;
+        }
+        !input.chars().any(|c| c.is_control())
+    }
+
+    // helper: uphold formatting rules for messages
+    fn is_valid_message(input: &String) -> bool {
+        if input.chars().count() > ProtestApp::MESSAGE_CHAR_LIMIT {
+            return false;
+        }
+        !input.chars().any(|c| c.is_control())
+    }
+
     // command: create client device and save personal information
     async fn signup_agent_cmd(
         args: ArgMatches,
@@ -394,6 +414,13 @@ impl ProtestApp {
         alias: String,
         context: &mut Arc<Self>,
     ) -> ReplResult<Option<String>> {
+        // step 0: validate agent alias
+        if !ProtestApp::is_valid_name(&alias) {
+            return Ok(Some(String::from(format!(
+                "Client Error: Alias Must Be Up To {} Chars",
+                ProtestApp::NAME_CHAR_LIMIT
+            ))));
+        }
         // step 1: start transaction
         let result = context.client.start_transaction();
         if result.is_err() {
@@ -697,6 +724,13 @@ impl ProtestApp {
         // step 2: set new client alias to key value store
         agent.alias = args.get_one::<String>("alias").unwrap().to_string();
         let json_agent = serde_json::to_string(&agent).unwrap();
+        // step 0: validate agent alias
+        if !ProtestApp::is_valid_name(&agent.alias) {
+            return ErrorReturn::Error(String::from(format!(
+                "Client Error: Alias Must Be Up To {} Chars",
+                ProtestApp::NAME_CHAR_LIMIT
+            )));
+        }
         // step 4: commit client data to key value store
         let res = context.client.start_transaction();
         if res.is_err() {
@@ -1226,6 +1260,13 @@ impl ProtestApp {
         agent_alias: String,
         context: &mut Arc<Self>,
     ) -> ErrorReturn<String> {
+        // step 0: validate agent alias
+        if !ProtestApp::is_valid_name(&agent_alias) {
+            return ErrorReturn::Error(String::from(format!(
+                "Client Error: Alias Must Be Up To {} Chars",
+                ProtestApp::NAME_CHAR_LIMIT
+            )));
+        }
         // step 1: check that device exists
         if !context.exists_device().await {
             return ErrorReturn::Error(String::from(
@@ -1545,6 +1586,15 @@ impl ProtestApp {
                         };
                         agent.coordinator_alias =
                             Some(join_team_request.coordinator_alias);
+                        // step 0: validate agent alias
+                        if !ProtestApp::is_valid_name(
+                            &agent.coordinator_alias.clone().unwrap(),
+                        ) {
+                            return ErrorReturn::Error(String::from(format!(
+                                "Client Error: Coordinator Alias Must Be Up To {} Chars",
+                                ProtestApp::NAME_CHAR_LIMIT
+                            )));
+                        }
                         // std::thread::sleep(std::time::Duration::from_secs(1));
                         let result = context.client.start_transaction();
                         if result.is_err() {
@@ -1663,6 +1713,13 @@ impl ProtestApp {
         message_type: MessageType,
         context: &mut Arc<Self>,
     ) -> ErrorReturn<OffsetDateTime> {
+        // step 0: input check on message
+        if !ProtestApp::is_valid_message(&message) {
+            return ErrorReturn::Error(String::from(format!(
+                "Client Error: Message Must Be Up To {} Chars",
+                ProtestApp::MESSAGE_CHAR_LIMIT
+            )));
+        }
         // step 1: check that device exists
         if !context.exists_device().await {
             return ErrorReturn::Error(String::from(
@@ -2449,6 +2506,13 @@ impl ProtestApp {
         message_type: MessageType,
         context: &mut Arc<Self>,
     ) -> ErrorReturn<OffsetDateTime> {
+        // step 0: input check on message
+        if !ProtestApp::is_valid_message(&message) {
+            return ErrorReturn::Error(String::from(format!(
+                "Client Error: Message Must Be Up To {} Chars",
+                ProtestApp::MESSAGE_CHAR_LIMIT
+            )));
+        }
         // step 1: check that device exists
         if !context.exists_device().await {
             return ErrorReturn::Error(String::from(
@@ -3171,6 +3235,26 @@ impl ProtestApp {
         info: String,
         context: &mut Arc<Self>,
     ) -> ErrorReturn<String> {
+        // step 0: input check on name, location_type, info
+        if !ProtestApp::is_valid_name(&name) {
+            return ErrorReturn::Error(String::from(format!(
+                "Client Error: Name Must Be Up To {} Chars",
+                ProtestApp::NAME_CHAR_LIMIT
+            )));
+        }
+        if !ProtestApp::is_valid_name(&location_type) {
+            return ErrorReturn::Error(String::from(format!(
+                "Client Error: Location Type Must Be Up To {} Chars",
+                ProtestApp::NAME_CHAR_LIMIT
+            )));
+        }
+        if !ProtestApp::is_valid_message(&info) {
+            return ErrorReturn::Error(String::from(format!(
+                "Client Error: Info Must Be Up To {} Chars",
+                ProtestApp::MESSAGE_CHAR_LIMIT
+            )));
+        }
+        // end of input checks on name, location_type, info
         let agent = match ProtestApp::get_agent_info(context).await {
             ErrorReturn::Object(agent) => agent,
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
@@ -3826,7 +3910,19 @@ impl ProtestApp {
             ErrorReturn::Object(agent) => agent,
             ErrorReturn::Error(err) => return ErrorReturn::Error(err),
         };
-        // std::thread::sleep(std::time::Duration::from_secs(1));
+        // step 0: input check on name, location_type, info
+        if !ProtestApp::is_valid_name(&operation_name) {
+            return ErrorReturn::Error(String::from(format!(
+                "Client Error: Operation Name Must Be Up To {} Chars",
+                ProtestApp::NAME_CHAR_LIMIT
+            )));
+        }
+        if !ProtestApp::is_valid_message(&info) {
+            return ErrorReturn::Error(String::from(format!(
+                "Client Error: Info Must Be Up To {} Chars",
+                ProtestApp::MESSAGE_CHAR_LIMIT
+            )));
+        }
         // check that agent has joined a team already
         match agent.coordinator_alias {
             Some(_) => {}
