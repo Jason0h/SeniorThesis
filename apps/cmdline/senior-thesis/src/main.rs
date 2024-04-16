@@ -4881,7 +4881,7 @@ async fn main() -> ReplResult<()> {
             Command::new("update_agent_location")
                 .arg(Arg::new("longitude").required(true))
                 .arg(Arg::new("latitude").required(false))
-                .about("update_agent_location <longitude> <latitude> or delete_public_message Auto"),
+                .about("update_agent_location <longitude> <latitude> or update_agent_location Auto"),
             |args, context| {
                 Box::pin(ProtestApp::update_agent_location_cmd(args, context))
             },
@@ -4915,7 +4915,7 @@ async fn main() -> ReplResult<()> {
         )
         .with_command_async(
             Command::new("get_own_location_database")
-                .about("get_own_location_database <index>"),
+                .about("get_own_location_database"),
             |_, context| {
                 Box::pin(ProtestApp::get_own_location_database_cmd(context))
             },
@@ -4924,8 +4924,8 @@ async fn main() -> ReplResult<()> {
             Command::new("get_location_database")
                 .arg(Arg::new("location_type").required(true))
                 .arg(Arg::new("distance_from_agent").required(false))
-                .about("get_own_location_database <location_type> <distance_from_agent (in km)>\n
-                location_type: All, Danger, Resource"),
+                .about("get_own_location_database <location_type> <distance_from_agent (in meters)>\n
+                location_type: All, xxx"),
             |args, context| {
                 Box::pin(ProtestApp::get_location_database_cmd(args, context))
             },
