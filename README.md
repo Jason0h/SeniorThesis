@@ -1,13 +1,18 @@
-# SCUBA Client Libraries
+# ProtestApp: Private Protest Coordination
 
-SCUBA provides a general programming and communication model for applications that fit a client-based architecture. Fitting applications are those in which that amount of data can fit on a single device, computation over data is relatively minimal, and data is shared across a relatively small number of devices. Examples of this are: health-tracking applications (e.g. period trackers), small-scale social media, games (e.g. chess), and IoT applications (e.g. smart light switches). 
+**ProtestApp** is an app for privately coordinating protests built on top of the Princeton SNS SCUBA framework. 
+Via SCUBA, application traffic is double ratchet encrypted and application state is stored on the client machines, not the central server. The core functionalities of the app are private & public messaging, location information database writing & querying, and operation proposal & voting.
 
-This repository consists of the SCUBA [core client library](https://github.com/princeton-sns/noise-rust/tree/main/client/core), SCUBA data abstraction layers (providing [single-key](https://github.com/princeton-sns/scuba/tree/main/client/single-key-dal) and [transactional](https://github.com/princeton-sns/noise-rust/tree/main/client/serializable-noise-kv) consistency guarantees on top of a key-value store), and command-line SCUBA [applications](https://github.com/princeton-sns/noise-rust/tree/main/apps). 
+Note that **senior-thesis** is an independent copy of the original [**princeton-sns/scuba**](https://github.com/princeton-sns/scuba) repository. Therefore, credit for any of the work that that is outside of the **senior-thesis**/apps/cmdline/senior-thesis subdirectory belongs to the developers of the original repository. In other words, all of the code that is specific to **senior-thesis** can be found within the **senior-thesis**/apps/cmdline/senior-thesis subdirectory.
 
-The SCUBA [server](https://github.com/princeton-sns/scuba/tree/main/server) routes and orders all encrypted operations in the system, enabling offline communication and client validation of a host of consistency models.
+## Installing and Running from Source
 
-The core client library establishes end-to-end [double ratchet](https://signal.org/docs/specifications/doubleratchet/) encryption, server communication, and mechanisms for detecting consistency violations in a Byzantine setting. Notably, the core library is entirely application-agnostic, and applications can either communicate with it directly or through a relevant data abstraction layer.
+Rust and Cargo must be installed on your machine. Visit https://rustup.rs for installation instructions.
 
-The data abstraction layers provide various consistency, data model, and access control abstractions to applications, illustrating how SCUBA can support a variety of application needs.
+Open a terminal window and ``cd`` to ``senior-thesis/apps/cmdline/senior-thesis``. Run ``./startshards.sh & ./startsequencer.sh``. This terminal window represents your central **server** for ProtestApp.
 
-Finally, the applications demonstrate how SCUBA-based applications can focus on implementing application-specific logic, since cross-device communication, consistency guarantees, access control, and encryption are all handled by the underlying libraries.
+Open another terminal window ``cd`` to ``senior-thesis/apps/cmdline/senior-thesis``. This terminal window represents a **client** instance of ProtestApp. Run ``cargo run`` to spin up this instance. You will need to repeat these steps if you want to create multiple ProtestApp clients. It is quite likely that you'll encounter an issue with CMake. If this happens, download the latest version of CMake (e.g. via ``brew install cmake`` on MacOS) and run ``export CMAKE_POLICY_VERSION_MINIMUM=3.5`` before attempting the ``cargo run`` command again.
+
+## Application Sneak Peak
+
+Detailed instructions on how to use the application can be found in the senior-thesis/written_final_report.pdf writeup; read Chapter 5 and Section 4.1.2. Do note that **ProtestApp** currently only works when the clients & server are all instances that live on the same machine (i.e. when no network calls are involved).
