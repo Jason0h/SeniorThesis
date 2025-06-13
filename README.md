@@ -13,6 +13,13 @@ Open a terminal window and ``cd`` to ``senior-thesis/apps/cmdline/senior-thesis`
 
 Open another terminal window ``cd`` to ``senior-thesis/apps/cmdline/senior-thesis``. This terminal window represents a **client** instance of ProtestApp. Run ``cargo run`` to spin up this instance. You will need to repeat these steps if you want to create multiple ProtestApp clients. It is quite likely that you'll encounter an issue with CMake. If this happens, download the latest version of CMake (e.g. via ``brew install cmake`` on MacOS) and run ``export CMAKE_POLICY_VERSION_MINIMUM=3.5`` before attempting the ``cargo run`` command again.
 
+Detailed instructions on how to use the application can be found in the senior-thesis/written_final_report.pdf writeup; read Chapter 5 and Section 4.1.2. Do note that **ProtestApp** currently only works when the clients & server are all instances that live on the same machine (i.e. when no network calls are involved).
+
 ## Application Sneak Peak
 
-Detailed instructions on how to use the application can be found in the senior-thesis/written_final_report.pdf writeup; read Chapter 5 and Section 4.1.2. Do note that **ProtestApp** currently only works when the clients & server are all instances that live on the same machine (i.e. when no network calls are involved).
+### Private Messaging
+
+### Location Database
+
+### Operation Voting
+
