@@ -1,3 +1,5 @@
+<img src="./encrypt.png" alt="Banner" style="width: 40%;" />
+
 # ProtestApp: Private Protest Coordination
 
 **ProtestApp** is an app for privately coordinating protests built on top of the Princeton SNS SCUBA framework. 
