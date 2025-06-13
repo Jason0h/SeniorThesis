@@ -18,8 +18,11 @@ Detailed instructions on how to use the application can be found in the senior-t
 ## Application Sneak Peak
 
 ### Private Messaging
+<img src="images/messaging.png" alt="Banner" style="width: 100%;" />
 
 ### Location Database
+<img src="images/location.png" alt="Banner" style="width: 100%;" />
 
 ### Operation Voting
+<img src="images/operation.png" alt="Banner" style="width: 100%;" />
 
