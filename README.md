@@ -2,8 +2,7 @@
 
 # ProtestApp: Private Protest Coordination
 
-**ProtestApp** is an app for privately coordinating protests built on top of the Princeton SNS SCUBA framework. 
-Via SCUBA, application traffic is double ratchet encrypted and application state is stored on the client machines, not the central server. The core functionalities of the app are private & public messaging, location information database writing & querying, and operation proposal & voting.
+**ProtestApp** is an app for privately coordinating protests built on top of the Princeton SNS SCUBA framework. Via SCUBA, application traffic is double ratchet encrypted and application state is stored on the client machines, not the central server. Although application state is decentralized, ProtestApp provides linearizability guarantees. The core functionalities of the app are private & public messaging, location information database writing & querying, and operation proposal & voting.
 
 Note that **senior-thesis** is an independent copy of the original [**princeton-sns/scuba**](https://github.com/princeton-sns/scuba) repository. Therefore, credit for any of the work that that is outside of the **senior-thesis**/apps/cmdline/senior-thesis subdirectory belongs to the developers of the original repository. In other words, all of the code that is specific to **senior-thesis** can be found within the **senior-thesis**/apps/cmdline/senior-thesis subdirectory.
 
